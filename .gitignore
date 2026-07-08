@@ -1,0 +1,51 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+
+# .NET
+*.user
+*.suo
+*.userprefs
+project.lock.json
+project.assets.json
+*.nuget.props
+*.nuget.targets
+*.binlog
+
+# Rider / JetBrains
+.idea/
+riderModule.iml
+*.iml
+/_ReSharper.Caches/
+*.DotSettings.user
+
+# Visual Studio
+.vs/
+*.vspscc
+*.vssscc
+
+# NuGet
+/packages/
+*.nupkg
+*.snupkg
+
+# Test / coverage (none currently, but keep out if added)
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+
+# OS cruft
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local tooling and secrets
+*.local.json
+.env
+.env.*
+
+# Upstream protocol reference clone (not committed; see THIRD-PARTY-NOTICES.md)
+tools/reference/
