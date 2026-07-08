@@ -20,7 +20,7 @@ There's a dry run mode if you want to test your settings without actually shutti
 
 ## Which models work
 
-The C1000X is tested and working. The C1000 Gen 2, C300, C800, F2000, and F3800 should also work but I haven't personally tested them.
+The C1000X and C1000 Gen 2 are tested and working. The C300, C800, F2000, and F3800 should also work but I haven't personally tested them.
 
 Other Anker stuff (Solarbank, PowerCore chargers, power banks) won't work. They either don't broadcast the data Anchor needs or don't make sense as a PC backup.
 
