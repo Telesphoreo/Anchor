@@ -90,7 +90,7 @@ The uninstaller leaves `%APPDATA%\Anchor` in place, so your configuration surviv
 ## Updates
 
 Anchor checks GitHub Releases for a newer version on startup. When an update is available it shows a
-tray notification and an **Update available…** menu item that downloads and launches the new installer.
+tray notification and an **Update available...** menu item that downloads and launches the new installer.
 You can also check on demand from the tray menu (**Check for updates…**).
 
 ## Building from source
@@ -98,12 +98,13 @@ You can also check on demand from the tray menu (**Check for updates…**).
 Requirements:
 
 - .NET 10 SDK
+- PowerShell 7
 - [Inno Setup 6](https://jrsoftware.org/isdl.php) (for building the installer)
 
 From the repository root:
 
 ```powershell
-scripts\build-installer.ps1
+pwsh scripts\build-installer.ps1
 ```
 
 The script publishes the tray app as a self-contained single-file `win-x64` executable into
