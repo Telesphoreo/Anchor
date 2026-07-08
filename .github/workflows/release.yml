@@ -28,13 +28,34 @@ jobs:
       - name: Install Inno Setup 6
         run: choco install innosetup -y
 
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $iss = Get-Content installer/anchor.iss -Raw
+          if ($iss -notmatch '#define\s+MyAppVersion\s+"([^"]+)"') {
+            throw 'Could not find MyAppVersion in installer/anchor.iss.'
+          }
+
+          $version = $Matches[1]
+          $tag = "v$version"
+
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) {
+            throw "Pushed tag '$env:GITHUB_REF_NAME' does not match installer version '$tag'."
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "name=Anchor $version" >> $env:GITHUB_OUTPUT
+
       - name: Publish and compile installer
         run: pwsh -File scripts/build-installer.ps1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.version.outputs.name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: artifacts/installer/*.exe
