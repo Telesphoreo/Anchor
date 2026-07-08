@@ -24,7 +24,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore ankerupsd.sln
+        run: dotnet restore Anchor.sln
 
       - name: Build
-        run: dotnet build ankerupsd.sln -c Release --no-restore
+        run: dotnet build Anchor.sln -c Release --no-restore

@@ -1,6 +1,6 @@
 name: Release
 
-# The installer version comes from installer/ankerups.iss (#define MyAppVersion)
+# The installer version comes from installer/anchor.iss (#define MyAppVersion)
 # and drives OutputBaseFilename (Anchor-<version>-setup.exe). Keep MyAppVersion
 # in step with the pushed git tag and the csproj <Version>.
 
