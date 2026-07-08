@@ -7,6 +7,12 @@ shuts Windows down when wall power is lost and the station's battery drains to a
 Think of it as PowerChute for an Anker Solix: no data cable, no separate UPS box — the power station
 you already run your PC from becomes the battery backup, and Anchor handles the orderly shutdown.
 
+## Screenshots
+
+![Anchor Settings](docs/screenshots/settings.png)
+
+![Anchor Status](docs/screenshots/status.png)
+
 ## How it works
 
 Anchor polls the power station's telemetry over BLE and watches two things: whether AC input
