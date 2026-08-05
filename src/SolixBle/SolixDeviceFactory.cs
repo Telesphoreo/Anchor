@@ -23,6 +23,9 @@ public enum SolixDeviceModel
     /// <summary>F2000 / PowerHouse 767.</summary>
     F2000,
 
+    /// <summary>F2600 / A1781.</summary>
+    F2600,
+
     /// <summary>F3800.</summary>
     F3800,
 }
@@ -39,6 +42,7 @@ public static class SolixDeviceFactory
         SolixDeviceModel.C300 => new C300(address, name),
         SolixDeviceModel.C800 => new C800(address, name),
         SolixDeviceModel.F2000 => new F2000(address, name),
+        SolixDeviceModel.F2600 => new F2600(address, name),
         SolixDeviceModel.F3800 => new F3800(address, name),
         _ => throw new ArgumentOutOfRangeException(nameof(model), model, "Unsupported Solix device model"),
     };

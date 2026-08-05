@@ -19,7 +19,7 @@ public class SolixBleDevice : IAsyncDisposable
     private static readonly string[] DefaultTelemetryCommands = ["c402", "4300", "c405"];
 
     private readonly ulong _bluetoothAddress;
-    private readonly string? _bleName;
+    private string? _bleName;
 
     private GattClient? _client;
     private Dictionary<string, Dictionary<int, byte[]>> _fragmentBuffers = new();
@@ -95,6 +95,9 @@ public class SolixBleDevice : IAsyncDisposable
 
     /// <summary>True when telemetry data has been received (the store is populated).</summary>
     protected bool HasData => _data is not null;
+
+    /// <summary>True when the latest telemetry contains the given parameter key.</summary>
+    protected bool HasParameter(string key) => _data?.ContainsKey(key) == true;
 
     /// <summary>
     /// Optional delay between establishing the BLE connection and sending the
@@ -172,6 +175,11 @@ public class SolixBleDevice : IAsyncDisposable
             return false;
         }
 
+        // Devices are often created from a saved address without a name; adopt
+        // the OS-known device name once the transport has resolved it.
+        if (string.IsNullOrEmpty(_bleName) && _client?.DeviceName is { Length: > 0 } osName)
+            _bleName = osName;
+
         SolixLog.Debug($"Established initial connection to '{Name}' on attempt {_connectionAttempts}!");
 
         // Optional settle delay before the first negotiation write.
@@ -196,7 +204,7 @@ public class SolixBleDevice : IAsyncDisposable
                 // spinning against a dead client until the overall timeout.
                 // Connected alone is not enough: MaintainConnection makes the
                 // OS silently re-link, but our characteristic handles from the
-                // dead session stay stale — a fresh ConnectAsync is required.
+                // dead session stay stale; a fresh ConnectAsync is required.
                 if (_linkLost || !Connected)
                 {
                     if (ResumeNegotiationAfterStage0Disconnect

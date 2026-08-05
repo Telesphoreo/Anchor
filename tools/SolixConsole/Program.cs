@@ -784,7 +784,7 @@ async Task RunConnectAsync(SolixDeviceModel deviceModel, ulong deviceAddress, st
         return;
     }
 
-    Console.WriteLine("Connected. Streaming telemetry - press Ctrl+C to disconnect and exit.");
+    Console.WriteLine("Connected. Streaming telemetry; press Ctrl+C to disconnect and exit.");
     try
     {
         await Task.Delay(Timeout.Infinite, cts.Token);
@@ -816,7 +816,7 @@ static void PrintChecklist()
 {
     Console.WriteLine();
     Console.WriteLine("Device-side checklist:");
-    Console.WriteLine("  1. Press the Bluetooth/IoT button on the station - Wi-Fi setup disables Bluetooth.");
+    Console.WriteLine("  1. Press the Bluetooth/IoT button on the station (Wi-Fi setup disables Bluetooth).");
     Console.WriteLine("  2. If still absent, power-cycle the station (it stops advertising after long disconnection).");
-    Console.WriteLine("  3. Close the Anker phone app - it holds an exclusive BLE connection.");
+    Console.WriteLine("  3. Close the Anker phone app (it holds an exclusive BLE connection).");
 }

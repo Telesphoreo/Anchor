@@ -18,7 +18,7 @@ public sealed class CountdownForm : Form
         _deadline = deadline;
         _cancelAction = cancelAction;
 
-        Text = "Anchor — shutdown pending";
+        Text = "Anchor: shutdown pending";
         AutoScaleMode = AutoScaleMode.Font;
         AutoScaleDimensions = new SizeF(7F, 15F);
         FormBorderStyle = FormBorderStyle.FixedDialog;

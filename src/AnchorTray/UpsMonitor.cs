@@ -180,7 +180,8 @@ public sealed class UpsMonitor : IAsyncDisposable
         }
 
         var model = config.ParseModel();
-        var device = SolixDeviceFactory.Create(model, address);
+        var device = SolixDeviceFactory.Create(
+            model, address, string.IsNullOrEmpty(config.DeviceName) ? null : config.DeviceName);
         var session = new Session
         {
             Mac = config.DeviceMac,
@@ -358,7 +359,7 @@ public sealed class UpsMonitor : IAsyncDisposable
     /// <summary>
     /// The floor the policy actually acts on. Normally this is exactly the
     /// configured floor. It is only raised when the configured floor is at or
-    /// below the station's own discharge cutoff — in that case the station would
+    /// below the station's own discharge cutoff; in that case the station would
     /// cut output before the countdown ever fired, so the floor is nudged to
     /// cutoff+1 (capped at 95) so the countdown fires while output still exists.
     /// A configured floor already above the cutoff is left untouched.
@@ -370,7 +371,7 @@ public sealed class UpsMonitor : IAsyncDisposable
 
     /// <summary>
     /// Push a recomputed effective floor into the policy, but only when the value
-    /// actually changed — <see cref="PolicyEngine.UpdateSettings"/> resets the
+    /// actually changed; <see cref="PolicyEngine.UpdateSettings"/> resets the
     /// debounce counter, so calling it every sample would defeat debouncing.
     /// Runs under the gate.
     /// </summary>
@@ -413,7 +414,7 @@ public sealed class UpsMonitor : IAsyncDisposable
         {
             return new UpsStatus(
                 _config.Configured,
-                DeviceName: "Unknown",
+                DeviceName: string.IsNullOrEmpty(_config.DeviceName) ? "Unknown" : _config.DeviceName,
                 _config.DeviceMac,
                 _config.ParseModel().ToString(),
                 Connected: false,

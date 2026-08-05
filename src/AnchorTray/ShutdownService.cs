@@ -18,7 +18,7 @@ internal static class ShutdownService
     // SHTDN_REASON_FLAG_PLANNED | SHTDN_REASON_MAJOR_POWER.
     private const uint ShutdownReason = 0x80060000;
 
-    private const string ShutdownMessage = "Anchor: shutting down — power station battery at floor.";
+    private const string ShutdownMessage = "Anchor: shutting down. Power station battery at floor.";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct Luid

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 
 namespace Anchor;
 
@@ -35,6 +36,9 @@ public sealed class TrayAppContext : ApplicationContext
     private string _lastTooltip = "";
     private (IconKind Kind, int Bucket)? _lastIconKey;
     private bool _powerBalloonSeen;
+    private bool _sessionLocked;
+    private bool? _lastNotifiedAvailable;
+    private readonly System.Windows.Forms.Timer _unlockReconcileTimer;
     private bool _exiting;
     private UpdateInfo? _availableUpdate;
     private bool _updateBusy;
@@ -77,6 +81,15 @@ public sealed class TrayAppContext : ApplicationContext
         _icon.DoubleClick += (_, _) => OpenStatus();
         _icon.BalloonTipClicked += OnBalloonClicked;
 
+        // Availability balloons are suppressed while the session is locked
+        // (boot straight to the lock screen, resume from sleep); after unlock
+        // one balloon is shown only if the state differs from what the user
+        // last saw. The timer gives BLE a beat to reconnect after unlock.
+        _sessionLocked = IsSessionLocked();
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        _unlockReconcileTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _unlockReconcileTimer.Tick += OnUnlockReconcile;
+
         _monitor = new UpsMonitor(config, log);
         _monitor.StatusChanged += status => _sync.Post(_ => OnStatusUi(status), null);
         _monitor.EffectOccurred += effect => _sync.Post(_ => OnEffectUi(effect), null);
@@ -99,6 +112,8 @@ public sealed class TrayAppContext : ApplicationContext
     {
         if (disposing)
         {
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            _unlockReconcileTimer.Dispose();
             _icon.Dispose();
             foreach (var icon in _iconCache.Values)
                 icon.Dispose();
@@ -142,6 +157,17 @@ public sealed class TrayAppContext : ApplicationContext
         UpdateIcon(status);
         UpdateTooltip(status);
         _cancelMenuItem.Enabled = status.PolicyState == PolicyState.Pending;
+
+        // Persist a newly learned device name so it shows even before a connect.
+        if (status.Configured
+            && status.DeviceName is not ("" or "Unknown")
+            && string.Equals(status.DeviceMac, _config.DeviceMac, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(status.DeviceName, _config.DeviceName, StringComparison.Ordinal))
+        {
+            _config.DeviceName = status.DeviceName;
+            _config.Save(_log);
+        }
+
         _statusForm?.UpdateStatus(status);
 
         if (status.PolicyState == PolicyState.Pending && status.ShutdownDeadline is { } deadline)
@@ -194,13 +220,15 @@ public sealed class TrayAppContext : ApplicationContext
                 break;
 
             case PolicyEffect.BecameUnavailable:
-                ShowBalloon(ToolTipIcon.Warning, "Device unavailable",
-                    "No fresh data from the power station.");
+                if (!_sessionLocked)
+                    NotifyAvailability(false);
                 break;
 
             case PolicyEffect.BecameAvailable:
-                ShowBalloon(ToolTipIcon.Info, "Device connected",
-                    "Receiving data from the power station.");
+                // Skip the balloon when the user was never told about a drop
+                // (it happened entirely behind the lock screen).
+                if (!_sessionLocked && _lastNotifiedAvailable != true)
+                    NotifyAvailability(true);
                 break;
 
             case PolicyEffect.FloorRaisedByDeviceLimit:
@@ -216,13 +244,13 @@ public sealed class TrayAppContext : ApplicationContext
         CloseCountdownForm();
         if (_config.DryRun)
         {
-            _log.Info("[DRY RUN] Battery at floor on battery power — Windows shutdown would be initiated now.");
+            _log.Info("[DRY RUN] Battery at floor on battery power; Windows shutdown would be initiated now.");
             ShowBalloon(ToolTipIcon.Warning, "Dry run: shutdown suppressed",
                 "Windows shutdown would have been initiated now.");
             return;
         }
 
-        _log.Warning("Battery at floor on battery power — initiating Windows shutdown.");
+        _log.Warning("Battery at floor on battery power; initiating Windows shutdown.");
         ShowBalloon(ToolTipIcon.Error, "Shutting down", "Power station battery is at the configured floor.");
         FireAndForget(ShutdownService.ShutdownAsync(_log), "System shutdown");
     }
@@ -330,10 +358,10 @@ public sealed class TrayAppContext : ApplicationContext
             return;
 
         _availableUpdate = info;
-        _installUpdateItem.Text = $"Update available — install {info.Latest}…";
+        _installUpdateItem.Text = $"Update available: install {info.Latest}…";
         _installUpdateItem.Visible = true;
         ShowBalloon(ToolTipIcon.Info, "Update available",
-            $"Anchor {info.Latest} is available — click here or use the tray menu to update.");
+            $"Anchor {info.Latest} is available. Click here or use the tray menu to update.");
         _updateBalloonActive = true;
     }
 
@@ -413,6 +441,45 @@ public sealed class TrayAppContext : ApplicationContext
         {
             _checkUpdatesItem.Enabled = true;
         }
+    }
+
+    private void NotifyAvailability(bool available)
+    {
+        _lastNotifiedAvailable = available;
+        if (available)
+            ShowBalloon(ToolTipIcon.Info, "Device connected",
+                "Receiving data from the power station.");
+        else
+            ShowBalloon(ToolTipIcon.Warning, "Device unavailable",
+                "No fresh data from the power station.");
+    }
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        switch (e.Reason)
+        {
+            case SessionSwitchReason.SessionLock:
+                _sessionLocked = true;
+                _unlockReconcileTimer.Stop();
+                break;
+
+            case SessionSwitchReason.SessionUnlock:
+                _sessionLocked = false;
+                _unlockReconcileTimer.Stop();
+                _unlockReconcileTimer.Start();
+                break;
+        }
+    }
+
+    private void OnUnlockReconcile(object? sender, EventArgs e)
+    {
+        _unlockReconcileTimer.Stop();
+        if (_exiting || !_config.Configured)
+            return;
+
+        var available = _monitor.GetSnapshot().Available;
+        if (_lastNotifiedAvailable != available)
+            NotifyAvailability(available);
     }
 
     private void ShowBalloon(ToolTipIcon icon, string title, string text)
@@ -559,6 +626,27 @@ public sealed class TrayAppContext : ApplicationContext
             t => _log.Error($"{operation} failed: {t.Exception?.GetBaseException()}"),
             TaskContinuationOptions.OnlyOnFaulted);
 
+    /// <summary>
+    /// True when the interactive session is on the secure desktop (lock screen).
+    /// Covers the boot-straight-to-lock-screen case, which happens before any
+    /// SessionSwitch event this process could observe.
+    /// </summary>
+    private static bool IsSessionLocked()
+    {
+        const uint desktopSwitchDesktop = 0x0100;
+        var desktop = OpenInputDesktop(0, false, desktopSwitchDesktop);
+        if (desktop == IntPtr.Zero)
+            return true;
+        CloseDesktop(desktop);
+        return false;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr handle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
+
+    [DllImport("user32.dll")]
+    private static extern bool CloseDesktop(IntPtr desktop);
 }

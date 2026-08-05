@@ -3,6 +3,15 @@ name: Release
 # The installer version comes from installer/anchor.iss (#define MyAppVersion)
 # and drives OutputBaseFilename (Anchor-<version>-setup.exe). Keep MyAppVersion
 # in step with the pushed git tag and the csproj <Version>.
+#
+# Releases are immutable (repository setting): once published, the release
+# assets and the tag are locked. To fix a bad release, ship a new version.
+#
+# Each installer gets a signed build provenance attestation. Verify a download
+# with: gh attestation verify Anchor-<version>-setup.exe -R Telesphoreo/Anchor
+#
+# A tag push builds and publishes a release. A manual run (workflow_dispatch)
+# builds and attests the installer but only uploads it as a workflow artifact.
 
 on:
   push:
@@ -10,23 +19,29 @@ on:
       - 'v*'
   workflow_dispatch:
 
-permissions:
-  contents: write
+# Grant nothing by default; the job requests what it needs.
+permissions: {}
 
 jobs:
   release:
     runs-on: windows-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # sign the provenance attestation (Sigstore)
+      attestations: write  # store the attestation
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up .NET 10 SDK
-        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
 
       - name: Install Inno Setup 6
-        run: choco install innosetup -y
+        run: choco install innosetup --version=6.7.1 -y
 
       - name: Resolve release version
         id: version
@@ -51,11 +66,38 @@ jobs:
       - name: Publish and compile installer
         run: pwsh -File scripts/build-installer.ps1
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem artifacts/installer/*.exe | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          $lines | Set-Content artifacts/installer/SHA256SUMS.txt
+          Get-Content artifacts/installer/SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          name: ${{ steps.version.outputs.name }}
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
-          files: artifacts/installer/*.exe
+          subject-path: artifacts/installer/*.exe
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          $assets = @(Get-ChildItem artifacts/installer/*.exe | ForEach-Object FullName)
+          $assets += (Resolve-Path artifacts/installer/SHA256SUMS.txt).Path
+          gh release create $env:TAG @assets --title $env:NAME --generate-notes --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE." }
+
+      - name: Upload installer as workflow artifact (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-${{ steps.version.outputs.version }}
+          path: |
+            artifacts/installer/*.exe
+            artifacts/installer/SHA256SUMS.txt

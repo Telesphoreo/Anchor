@@ -20,7 +20,7 @@ There's a dry run mode if you want to test your settings without actually shutti
 
 ## Which models work
 
-The C1000X and C1000 Gen 2 are tested and working. The C300, C800, F2000, and F3800 should also work but I haven't personally tested them.
+The C1000X and C1000 Gen 2 are tested and working. The C300, C800, F2000, F2600, and F3800 should also work but I haven't personally tested them.
 
 Other Anker stuff (Solarbank, PowerCore chargers, power banks) won't work. They either don't broadcast the data Anchor needs or don't make sense as a PC backup.
 
@@ -29,6 +29,8 @@ Other Anker stuff (Solarbank, PowerCore chargers, power banks) won't work. They 
 Download the latest installer from the releases page and run it. It needs admin rights to install to Program Files.
 
 Windows will probably complain because the installer isn't signed. Click "More info" then "Run anyway" to get past SmartScreen.
+
+If you want to check that your download really came from this repo's build pipeline, every release ships with a SHA256SUMS.txt file and a signed provenance attestation. With the [GitHub CLI](https://cli.github.com/) installed, run `gh attestation verify Anchor-<version>-setup.exe -R Telesphoreo/Anchor`. Releases are also immutable, so nothing can be swapped out after publish.
 
 Anchor sets itself to start with Windows by default. You can change this in Settings later. Your PC needs Bluetooth, and it needs to be close enough to the power station for Bluetooth to reach.
 

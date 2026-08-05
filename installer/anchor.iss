@@ -3,7 +3,7 @@
 ; Compile via scripts\build-installer.ps1 (which publishes the app first).
 
 #define MyAppName "Anchor"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Telesphoreo"
 #define MyAppURL "https://github.com/Telesphoreo/Anchor"
 #define MyAppExeName "Anchor.exe"
@@ -44,7 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "launchafterinstall"; Description: "Launch {#MyAppName} when setup finishes"; GroupDescription: "Options:"
 
 [Files]
-; Self-contained single-file publish still emits a few native .dll neighbors — package everything.
+; Self-contained single-file publish still emits a few native .dll neighbors, so package everything.
 Source: "..\artifacts\publish\*"; Excludes: "*.pdb"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]

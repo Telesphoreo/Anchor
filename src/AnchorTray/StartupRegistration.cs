@@ -4,7 +4,7 @@ namespace Anchor;
 
 /// <summary>
 /// Manages the per-user "start at login" registry value (HKCU Run). The app owns
-/// this exclusively — the installer does not write it — so an admin install never
+/// this exclusively (the installer does not write it), so an admin install never
 /// touches a per-user area and there is a single source of truth for autostart.
 /// </summary>
 internal static class StartupRegistration

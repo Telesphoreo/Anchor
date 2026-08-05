@@ -33,6 +33,9 @@ internal sealed class GattClient : IAsyncDisposable
         && _telemetryCharacteristic is not null
         && _commandCharacteristic is not null;
 
+    /// <summary>The OS-known name of the resolved device, or null before resolution.</summary>
+    public string? DeviceName => _device?.Name;
+
     /// <summary>Raised with a copy of the bytes of every telemetry characteristic notification.</summary>
     public event Action<GattClient, byte[]>? NotificationReceived;
 
@@ -97,9 +100,9 @@ internal sealed class GattClient : IAsyncDisposable
             throw new InvalidOperationException("Device does not expose the Solix telemetry/command characteristics!");
 
         SolixLog.Debug(
-            $"Characteristic properties — telemetry: [{_telemetryCharacteristic.CharacteristicProperties}], " +
-            $"command: [{_commandCharacteristic.CharacteristicProperties}], " +
-            $"command protection level: {_commandCharacteristic.ProtectionLevel}");
+            $"Characteristic properties: telemetry [{_telemetryCharacteristic.CharacteristicProperties}], " +
+            $"command [{_commandCharacteristic.CharacteristicProperties}], " +
+            $"command protection level {_commandCharacteristic.ProtectionLevel}");
 
         SolixLog.Debug($"Subscribing to telemetry notifications from {_bluetoothAddress:X12}...");
         _telemetryCharacteristic.ValueChanged += OnValueChanged;
@@ -151,11 +154,11 @@ internal sealed class GattClient : IAsyncDisposable
         }
         catch (Exception ex) when (ex is ObjectDisposedException or System.Runtime.InteropServices.COMException)
         {
-            // WinRT throws these when the underlying link died out from under us —
+            // WinRT throws these when the underlying link died out from under us -
             // surface it as an ordinary failed write, not a crash.
             var hr = ex is System.Runtime.InteropServices.COMException com ? $" HRESULT=0x{com.HResult:X8}" : "";
             throw new InvalidOperationException(
-                $"GATT write failed — the BLE connection was lost ({ex.GetType().Name}{hr}).", ex);
+                $"GATT write failed: the BLE connection was lost ({ex.GetType().Name}{hr}).", ex);
         }
 
         if (result.Status != GattCommunicationStatus.Success)

@@ -85,7 +85,7 @@ public static class Updater
     /// <summary>
     /// Download the installer to %TEMP%\Anchor-update and launch it via the
     /// shell (so the admin installer's UAC prompt appears). Returns true when
-    /// the installer was launched — the caller should then exit so the
+    /// the installer was launched; the caller should then exit so the
     /// installer can replace the running executable. When the release had no
     /// installer asset, opens the release page in the browser and returns
     /// false. Failures are logged and return false.

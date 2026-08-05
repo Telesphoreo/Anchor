@@ -17,11 +17,14 @@ public sealed class SettingsForm : Form
         SolixDeviceModel.C300,
         SolixDeviceModel.C800,
         SolixDeviceModel.F2000,
+        SolixDeviceModel.F2600,
         SolixDeviceModel.F3800,
     ];
 
     private readonly FileLog _log;
     private readonly Action<AppConfig> _onSaved;
+    private readonly string _priorMac;
+    private readonly string _priorName;
 
     private readonly Button _scanButton;
     private readonly Label _scanStatus;
@@ -39,6 +42,8 @@ public sealed class SettingsForm : Form
     {
         _log = log;
         _onSaved = onSaved;
+        _priorMac = config.DeviceMac;
+        _priorName = config.DeviceName;
 
         Text = "Anchor Settings";
         AutoScaleMode = AutoScaleMode.Font;
@@ -101,20 +106,20 @@ public sealed class SettingsForm : Form
             FullRowSelect = true,
             MultiSelect = false,
             Dock = DockStyle.Fill,
-            MinimumSize = new Size(560, 260),
-            Margin = new Padding(0, 0, 0, 6),
+            MinimumSize = new Size(620, 280),
+            Margin = new Padding(0, 0, 0, 8),
         };
-        _deviceList.Columns.Add("Name", 230);
-        _deviceList.Columns.Add("MAC", 170);
+        _deviceList.Columns.Add("Name", 260);
+        _deviceList.Columns.Add("MAC", 220);
         _deviceList.Columns.Add("RSSI", -2); // Last column fills the remaining width.
 
         _scanGuidance = new Label
         {
-            Text = "No Solix devices found. On the power station, press the Bluetooth/IoT button — "
+            Text = "No Solix devices found. On the power station, press the Bluetooth/IoT button; "
                    + "setting up Wi-Fi turns Bluetooth off. If it still doesn't appear, power-cycle "
                    + "the station and close the Anker mobile app.",
             AutoSize = true,
-            MaximumSize = new Size(560, 0), // Wrap at the list width (scaled with DPI).
+            MaximumSize = new Size(620, 0), // Wrap at the list width (scaled with DPI).
             Visible = false,
             Margin = new Padding(0, 0, 0, 6),
         };
@@ -128,7 +133,7 @@ public sealed class SettingsForm : Form
         };
         _macBox = new TextBox
         {
-            MinimumSize = new Size(170, 0),
+            MinimumSize = new Size(220, 0),
             Anchor = AnchorStyles.Left,
             Margin = new Padding(0, 3, 0, 3),
             Text = config.DeviceMac,
@@ -174,8 +179,8 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            Padding = new Padding(10, 6, 10, 8),
-            Margin = new Padding(0, 0, 0, 8),
+            Padding = new Padding(14, 10, 14, 12),
+            Margin = new Padding(0, 0, 0, 10),
         };
         deviceGroup.Controls.Add(deviceTable);
 
@@ -221,8 +226,8 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            Padding = new Padding(10, 6, 10, 8),
-            Margin = new Padding(0, 0, 0, 8),
+            Padding = new Padding(14, 10, 14, 12),
+            Margin = new Padding(0, 0, 0, 10),
         };
         policyGroup.Controls.Add(policyTable);
 
@@ -274,7 +279,7 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
+            Padding = new Padding(16),
         };
         for (var i = 0; i < 4; i++)
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -318,7 +323,7 @@ public sealed class SettingsForm : Form
             if (bluetooth != BluetoothStatus.Ready)
             {
                 _scanStatus.Text = bluetooth == BluetoothStatus.RadioOff
-                    ? "Bluetooth is turned off — enable it in Windows settings."
+                    ? "Bluetooth is turned off. Enable it in Windows settings."
                     : "No Bluetooth adapter found.";
                 return;
             }
@@ -349,7 +354,7 @@ public sealed class SettingsForm : Form
         {
             _log.Error($"BLE scan failed: {ex}");
             if (!IsDisposed)
-                _scanStatus.Text = "Scan failed — see log.";
+                _scanStatus.Text = "Scan failed; see log.";
         }
         finally
         {
@@ -373,6 +378,7 @@ public sealed class SettingsForm : Form
         var config = new AppConfig
         {
             DeviceMac = mac,
+            DeviceName = ResolveDeviceName(mac),
             DeviceModel = ((SolixDeviceModel)_modelBox.SelectedItem!).ToString(),
             BatteryFloorPercent = (int)_floorBox.Value,
             CountdownSeconds = (int)_countdownBox.Value,
@@ -383,6 +389,23 @@ public sealed class SettingsForm : Form
         StartupRegistration.SetEnabled(_startupBox.Checked, _log);
         _onSaved(config);
         Close();
+    }
+
+    /// <summary>
+    /// The saved device name: the scan-list name for the saved MAC when one is
+    /// on screen, else the previously saved name as long as the MAC is unchanged.
+    /// </summary>
+    private string ResolveDeviceName(string mac)
+    {
+        foreach (ListViewItem item in _deviceList.Items)
+        {
+            if (!string.Equals(item.SubItems[1].Text, mac, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var name = item.SubItems[0].Text;
+            return name == "(unnamed)" ? "" : name;
+        }
+
+        return string.Equals(mac, _priorMac, StringComparison.OrdinalIgnoreCase) ? _priorName : "";
     }
 
     private static bool TryNormalizeMac(string input, out string mac)

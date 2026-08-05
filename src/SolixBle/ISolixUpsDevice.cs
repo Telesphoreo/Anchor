@@ -3,7 +3,7 @@ namespace SolixBle;
 /// <summary>
 /// Common UPS-relevant read surface implemented by the ported Solix device models.
 /// Property getters may throw <see cref="KeyNotFoundException"/> when a parameter is
-/// absent from the latest telemetry — callers guard.
+/// absent from the latest telemetry; callers guard.
 /// </summary>
 public interface ISolixUpsDevice
 {

@@ -29,8 +29,8 @@ internal static class Program
             log.Info("Verbose logging enabled.");
 
         // First run (fresh install, no saved config yet): register autostart so
-        // Anchor comes back after a reboot. The installer never writes this — the
-        // app owns the per-user Run key — so an admin install touches no user area.
+        // Anchor comes back after a reboot. The installer never writes this (the
+        // app owns the per-user Run key), so an admin install touches no user area.
         var firstRun = !AppConfig.Exists;
         var config = AppConfig.Load(log);
         if (firstRun && !StartupRegistration.IsEnabled())

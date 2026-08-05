@@ -76,7 +76,7 @@ public static class SolixScanner
                 if (found.TryGetValue(args.BluetoothAddress, out var existing))
                 {
                     // The local name may only arrive on a later advertisement or
-                    // scan response (which may lack the service UUIDs) —
+                    // scan response (which may lack the service UUIDs);
                     // update the record if a non-empty one shows up.
                     var newName = string.IsNullOrEmpty(name) ? existing.Name : name;
                     found[args.BluetoothAddress] = existing with

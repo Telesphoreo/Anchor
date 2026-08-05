@@ -18,6 +18,9 @@ public sealed class AppConfig
     /// <summary>MAC address of the power station ("AA:BB:CC:DD:EE:FF"); empty = unconfigured.</summary>
     public string DeviceMac { get; set; } = "";
 
+    /// <summary>Bluetooth name of the power station as last seen; empty = unknown.</summary>
+    public string DeviceName { get; set; } = "";
+
     /// <summary>Name of the <see cref="SolixDeviceModel"/> to monitor.</summary>
     public string DeviceModel { get; set; } = "C1000";
 
@@ -101,6 +104,7 @@ public sealed class AppConfig
     private void Normalize()
     {
         DeviceMac = string.IsNullOrWhiteSpace(DeviceMac) ? "" : DeviceMac.Trim();
+        DeviceName = string.IsNullOrWhiteSpace(DeviceName) ? "" : DeviceName.Trim();
         DeviceModel = ParseModel().ToString();
         BatteryFloorPercent = Math.Clamp(BatteryFloorPercent, 1, 95);
         DebounceSamples = Math.Clamp(DebounceSamples, 1, 10);

@@ -49,7 +49,7 @@ public sealed class StatusForm : Form
             ColumnCount = 2,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(16),
+            Padding = new Padding(20),
         };
 
         _model = AddRow(table, "Model").Value;
@@ -67,7 +67,7 @@ public sealed class StatusForm : Form
         _lastUpdate = AddRow(table, "Last update").Value;
         _floor = AddRow(table, "Shutdown floor").Value;
         // The raised-floor explanation can get long: wrap instead of widening the form.
-        _floor.MaximumSize = new Size(280, 0);
+        _floor.MaximumSize = new Size(320, 0);
         _policyState = AddRow(table, "Policy state").Value;
         _countdown = AddRow(table, "Countdown").Value;
 
@@ -100,11 +100,11 @@ public sealed class StatusForm : Form
             Text = caption + ":",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
-            Margin = new Padding(0, 4, 16, 4),
+            Margin = new Padding(0, 4, 20, 4),
         };
         var valueLabel = new Label
         {
-            Text = "—",
+            Text = "n/a",
             AutoSize = true,
             Margin = new Padding(0, 4, 0, 4),
         };
@@ -133,7 +133,7 @@ public sealed class StatusForm : Form
         _policyState.Text = PolicyText(status.PolicyState);
         _countdown.Text = status.PolicyState == PolicyState.Pending && status.ShutdownDeadline is { } deadline
             ? $"{Math.Max(0, (int)(deadline - DateTimeOffset.Now).TotalSeconds)} s"
-            : "—";
+            : "n/a";
     }
 
     /// <summary>Show a limit row only when the station actually reported the value.</summary>
@@ -148,7 +148,7 @@ public sealed class StatusForm : Form
 
     private static string FloorText(UpsStatus status) =>
         status.EffectiveFloorPercent != status.ConfiguredFloorPercent
-            ? $"{status.EffectiveFloorPercent}% (raised from {status.ConfiguredFloorPercent}% — "
+            ? $"{status.EffectiveFloorPercent}% (raised from {status.ConfiguredFloorPercent}%; "
               + $"station cuts output at {status.MinDischargeLimit}%)"
             : $"{status.ConfiguredFloorPercent}%";
 

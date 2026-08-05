@@ -85,10 +85,10 @@ public class F2000 : SolixBleDevice, ISolixUpsDevice
     public int SolarPowerIn => ParseInt("ae", begin: 1);
 
     /// <summary>Total AC power in, or the default int value.</summary>
-    public int AcPowerIn => ParseInt("af", begin: 1);
+    public virtual int AcPowerIn => ParseInt("af", begin: 1);
 
     /// <summary>Total AC power out, or the default int value.</summary>
-    public int AcPowerOut => ParseInt("b0", begin: 1);
+    public virtual int AcPowerOut => ParseInt("b0", begin: 1);
 
     /// <summary>Main software version, or the default string value.</summary>
     public string SoftwareVersion => HasData
@@ -142,5 +142,5 @@ public class F2000 : SolixBleDevice, ISolixUpsDevice
     public string SerialNumber => ParseString("d0", begin: 1);
 
     /// <summary>This model does not report a total power out value.</summary>
-    int ISolixUpsDevice.PowerOut => SolixConst.DefaultMetadataInt;
+    public virtual int PowerOut => SolixConst.DefaultMetadataInt;
 }
