@@ -140,6 +140,23 @@ public sealed class UpsMonitor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Report whether Windows accepted a shutdown request, or that the request
+    /// was intentionally suppressed by dry-run mode. Failed requests are put
+    /// back into a retryable pending state by the policy.
+    /// </summary>
+    public void CompleteShutdownAttempt(ShutdownAttemptResult result)
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+
+            RaiseEffect(_policy.CompleteShutdownAttempt(result, DateTimeOffset.Now));
+            StatusChanged?.Invoke(BuildStatusLocked());
+        }
+    }
+
     /// <summary>Get a current status snapshot.</summary>
     public UpsStatus GetSnapshot()
     {

@@ -4,9 +4,10 @@ using System.Runtime.InteropServices;
 namespace Anchor;
 
 /// <summary>
-/// Initiates a graceful Windows shutdown: enables SeShutdownPrivilege on the
-/// process token, then calls InitiateSystemShutdownExW. Retries once after
-/// 10 seconds on failure.
+/// Initiates a Windows shutdown without forcing applications closed: enables
+/// SeShutdownPrivilege on the process token, then calls
+/// InitiateSystemShutdownExW. Retry scheduling belongs to the policy layer so
+/// AC restoration can cancel a pending retry.
 /// </summary>
 internal static class ShutdownService
 {
@@ -65,17 +66,9 @@ internal static class ShutdownService
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
 
-    /// <summary>Shut Windows down; on failure retry once after 10 seconds.</summary>
+    /// <summary>Attempt to shut Windows down once.</summary>
     /// <returns>True if the shutdown was successfully initiated.</returns>
-    public static async Task<bool> ShutdownAsync(FileLog log)
-    {
-        if (TryShutdown(log))
-            return true;
-
-        log.Warning("Shutdown failed; retrying once in 10 s.");
-        await Task.Delay(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-        return TryShutdown(log);
-    }
+    public static Task<bool> ShutdownAsync(FileLog log) => Task.FromResult(TryShutdown(log));
 
     private static bool TryShutdown(FileLog log)
     {
@@ -84,7 +77,7 @@ internal static class ShutdownService
             EnableShutdownPrivilege(log);
             if (!InitiateSystemShutdownExW(
                     null, ShutdownMessage, 0,
-                    forceAppsClosed: true, rebootAfterShutdown: false, ShutdownReason))
+                    forceAppsClosed: false, rebootAfterShutdown: false, ShutdownReason))
             {
                 log.Error($"InitiateSystemShutdownExW failed with win32 error {Marshal.GetLastWin32Error()}.");
                 return false;

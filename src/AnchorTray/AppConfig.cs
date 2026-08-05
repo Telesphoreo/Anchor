@@ -84,8 +84,12 @@ public sealed class AppConfig
         return new AppConfig();
     }
 
-    /// <summary>Save atomically: write a temp file, then move it over the config file.</summary>
-    public void Save(FileLog log)
+    /// <summary>
+    /// Save atomically: write a temp file, then move it over the config file.
+    /// Returns false when persistence failed; callers must not report or apply a
+    /// successful settings change in that case.
+    /// </summary>
+    public bool Save(FileLog log)
     {
         try
         {
@@ -94,10 +98,12 @@ public sealed class AppConfig
             File.WriteAllText(tempPath, JsonSerializer.Serialize(this, JsonOptions));
             File.Move(tempPath, ConfigPath, overwrite: true);
             log.Info($"Saved configuration to '{ConfigPath}'.");
+            return true;
         }
         catch (Exception ex)
         {
             log.Error($"Failed to save config '{ConfigPath}': {ex.Message}");
+            return false;
         }
     }
 

@@ -29,6 +29,7 @@ public enum PolicyEffect
     CountdownCancelledAcRestored,
     CountdownCancelledReconfigured,
     ShutdownNow,
+    ShutdownFailed,
     BecameUnavailable,
     BecameAvailable,
 
@@ -40,6 +41,19 @@ public enum PolicyEffect
     FloorRaisedByDeviceLimit,
 }
 
+/// <summary>Outcome of attempting the irreversible shutdown side effect.</summary>
+public enum ShutdownAttemptResult
+{
+    /// <summary>Windows accepted the shutdown request.</summary>
+    Accepted,
+
+    /// <summary>Windows rejected the shutdown request.</summary>
+    Failed,
+
+    /// <summary>The request was deliberately skipped because dry-run mode is enabled.</summary>
+    SuppressedDryRun,
+}
+
 /// <summary>
 /// Pure shutdown-policy state machine: no timers, no BLE, time is passed in.
 /// Feed telemetry samples via <see cref="Update"/> and wall-clock ticks via
@@ -47,6 +61,8 @@ public enum PolicyEffect
 /// </summary>
 public sealed class PolicyEngine
 {
+    private static readonly TimeSpan ShutdownRetryDelay = TimeSpan.FromSeconds(30);
+
     private bool _configured;
     private int _floorPercent;
     private int _debounceSamples;
@@ -180,6 +196,35 @@ public sealed class PolicyEngine
         _disarmed = true;
         _consecutiveLow = 0;
         return true;
+    }
+
+    /// <summary>
+    /// Feed the result of a requested shutdown back into the policy. A real
+    /// shutdown accepted by Windows remains terminal. A failed request becomes
+    /// pending again and is retried after a short delay, while a dry run returns
+    /// to a disarmed on-battery state until AC is observed again.
+    /// </summary>
+    public PolicyEffect CompleteShutdownAttempt(ShutdownAttemptResult result, DateTimeOffset now)
+    {
+        if (State != PolicyState.ShutdownIssued)
+            return PolicyEffect.None;
+
+        if (result == ShutdownAttemptResult.SuppressedDryRun)
+        {
+            State = PolicyState.OnBattery;
+            ShutdownDeadline = null;
+            _disarmed = true;
+            _consecutiveLow = 0;
+            return PolicyEffect.None;
+        }
+
+        if (result == ShutdownAttemptResult.Accepted)
+            return PolicyEffect.None;
+
+        State = PolicyState.Pending;
+        ShutdownDeadline = now + ShutdownRetryDelay;
+        _consecutiveLow = 0;
+        return PolicyEffect.ShutdownFailed;
     }
 
     private PolicyEffect CheckDeadline(DateTimeOffset now)

@@ -385,7 +385,15 @@ public sealed class SettingsForm : Form
             DebounceSamples = (int)_debounceBox.Value,
             DryRun = _dryRunBox.Checked,
         };
-        config.Save(_log);
+        if (!config.Save(_log))
+        {
+            MessageBox.Show(this,
+                "Anchor could not save the configuration. Your current settings are still active. " +
+                "Check the log for details and try again.",
+                "Could not save settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
         StartupRegistration.SetEnabled(_startupBox.Checked, _log);
         _onSaved(config);
         Close();

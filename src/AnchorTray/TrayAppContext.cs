@@ -165,7 +165,7 @@ public sealed class TrayAppContext : ApplicationContext
             && !string.Equals(status.DeviceName, _config.DeviceName, StringComparison.Ordinal))
         {
             _config.DeviceName = status.DeviceName;
-            _config.Save(_log);
+            _ = _config.Save(_log);
         }
 
         _statusForm?.UpdateStatus(status);
@@ -219,6 +219,12 @@ public sealed class TrayAppContext : ApplicationContext
                 OnShutdownNow();
                 break;
 
+            case PolicyEffect.ShutdownFailed:
+                ShowBalloon(ToolTipIcon.Error, "Shutdown failed",
+                    "Windows did not accept the shutdown request. Anchor will retry shortly.");
+                ShowCountdownForm();
+                break;
+
             case PolicyEffect.BecameUnavailable:
                 if (!_sessionLocked)
                     NotifyAvailability(false);
@@ -247,12 +253,20 @@ public sealed class TrayAppContext : ApplicationContext
             _log.Info("[DRY RUN] Battery at floor on battery power; Windows shutdown would be initiated now.");
             ShowBalloon(ToolTipIcon.Warning, "Dry run: shutdown suppressed",
                 "Windows shutdown would have been initiated now.");
+            _monitor.CompleteShutdownAttempt(ShutdownAttemptResult.SuppressedDryRun);
             return;
         }
 
         _log.Warning("Battery at floor on battery power; initiating Windows shutdown.");
         ShowBalloon(ToolTipIcon.Error, "Shutting down", "Power station battery is at the configured floor.");
-        FireAndForget(ShutdownService.ShutdownAsync(_log), "System shutdown");
+        FireAndForget(ExecuteShutdownAsync(), "System shutdown");
+    }
+
+    private async Task ExecuteShutdownAsync()
+    {
+        var accepted = await ShutdownService.ShutdownAsync(_log);
+        _monitor.CompleteShutdownAttempt(
+            accepted ? ShutdownAttemptResult.Accepted : ShutdownAttemptResult.Failed);
     }
 
     private void OpenStatus()

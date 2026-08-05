@@ -16,7 +16,7 @@ Anchor connects to your power station over Bluetooth and watches two things: whe
 
 When you lose wall power and the battery drops to your chosen floor (say, 15%), Anchor starts a countdown. If the power comes back during the countdown, it cancels. If not, it shuts down Windows cleanly.
 
-There's a dry run mode if you want to test your settings without actually shutting down. It runs through all the same logic but just logs what it would have done.
+There's a dry run mode if you want to test your settings without actually shutting down. It runs through all the same logic but just logs what it would have done. After a dry run triggers, Anchor waits until it sees wall power return before arming for another outage.
 
 ## Which models work
 
