@@ -1,0 +1,2 @@
+# The Linux packages ship this file as is, so a Windows checkout must keep LF.
+*.desktop text eol=lf

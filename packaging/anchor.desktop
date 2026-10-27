@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Anchor
+GenericName=UPS Monitor
+Comment=Uses an Anker Solix power station as a UPS
+Exec=anchor
+TryExec=anchor
+Icon=anchor
+Terminal=false
+Categories=System;Monitor;
+Keywords=UPS;battery;power;Anker;Solix;shutdown;
+StartupNotify=false

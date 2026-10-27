@@ -1,17 +1,24 @@
 name: Release
 
-# The installer version comes from installer/anchor.iss (#define MyAppVersion)
-# and drives OutputBaseFilename (Anchor-<version>-setup.exe). Keep MyAppVersion
-# in step with the pushed git tag and the csproj <Version>.
+# The version comes from installer/anchor.iss (#define MyAppVersion). It names
+# the Windows installer (Anchor-<version>-setup.exe) and the Linux packages
+# (anchor_<version>-1_amd64.deb, anchor-<version>-1.x86_64.rpm,
+# anchor-<version>-1-x86_64.pkg.tar.zst). Keep MyAppVersion in step with the
+# pushed git tag and the csproj <Version>.
 #
 # Releases are immutable (repository setting): once published, the release
 # assets and the tag are locked. To fix a bad release, ship a new version.
 #
-# Each installer gets a signed build provenance attestation. Verify a download
-# with: gh attestation verify Anchor-<version>-setup.exe -R Telesphoreo/Anchor
+# The Windows and Linux jobs only build. The release job collects both, writes
+# one SHA256SUMS.txt over every asset, attests every asset, and creates the
+# release, so a release exists only when both platforms built. Each asset gets
+# a signed build provenance attestation. Verify a download with:
+#   gh attestation verify <file> -R Telesphoreo/Anchor
 #
-# A tag push builds and publishes a release. A manual run (workflow_dispatch)
-# builds and attests the installer but only uploads it as a workflow artifact.
+# A tag push builds and publishes the release, then publishes the .deb to the
+# Telesphorepo apt repo (packaging/telesphorepo.toml). A manual run
+# (workflow_dispatch) builds and attests everything but only uploads it as a
+# workflow artifact.
 
 on:
   push:
@@ -19,29 +26,23 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# Grant nothing by default; the job requests what it needs.
+# Grant nothing by default; each job requests what it needs.
 permissions: {}
 
 jobs:
-  release:
-    runs-on: windows-latest
+  version:
+    runs-on: ubuntu-latest
     permissions:
-      contents: write      # create the GitHub release
-      id-token: write      # sign the provenance attestation (Sigstore)
-      attestations: write  # store the attestation
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Set up .NET 10 SDK
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Install Inno Setup 6
-        run: choco install innosetup --version=6.7.1 -y
 
       - name: Resolve release version
         id: version
@@ -63,41 +64,140 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "name=Anchor $version" >> $env:GITHUB_OUTPUT
 
+  windows:
+    needs: version
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup --version=6.7.1 -y
+
       - name: Publish and compile installer
         run: pwsh -File scripts/build-installer.ps1
 
-      - name: Generate SHA-256 checksums
-        shell: pwsh
+      - name: Upload installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows
+          path: artifacts/installer/*.exe
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      NFPM_VERSION: '2.48.0'
+      NFPM_SHA256: '6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET 10 SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install nfpm
         run: |
-          $lines = Get-ChildItem artifacts/installer/*.exe | ForEach-Object {
-            '{0}  {1}' -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name
-          }
-          $lines | Set-Content artifacts/installer/SHA256SUMS.txt
-          Get-Content artifacts/installer/SHA256SUMS.txt
+          archive="nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/$archive"
+          echo "$NFPM_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/nfpm"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/nfpm" nfpm
+          echo "$RUNNER_TEMP/nfpm" >> "$GITHUB_PATH"
+
+      - name: Publish and build packages
+        run: pwsh -File scripts/build-linux-packages.ps1
+
+      - name: Upload packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux
+          path: artifacts/packages/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # sign the provenance attestations (Sigstore)
+      attestations: write  # store the attestations
+    steps:
+      - name: Download build outputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: release
+        run: |
+          sha256sum -- *.exe *.deb *.rpm *.pkg.tar.zst > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: artifacts/installer/*.exe
+          subject-path: release/*
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
-        shell: pwsh
+        working-directory: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          NAME: ${{ steps.version.outputs.name }}
+          TAG: ${{ needs.version.outputs.tag }}
+          NAME: ${{ needs.version.outputs.name }}
         run: |
-          $assets = @(Get-ChildItem artifacts/installer/*.exe | ForEach-Object FullName)
-          $assets += (Resolve-Path artifacts/installer/SHA256SUMS.txt).Path
-          gh release create $env:TAG @assets --title $env:NAME --generate-notes --verify-tag
-          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE." }
+          gh release create --repo "$GITHUB_REPOSITORY" --title "$NAME" --generate-notes --verify-tag \
+            "$TAG" ./*.exe ./*.deb ./*.rpm ./*.pkg.tar.zst SHA256SUMS.txt
 
-      - name: Upload installer as workflow artifact (manual runs)
+      - name: Upload release files as workflow artifact (manual runs)
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: installer-${{ steps.version.outputs.version }}
-          path: |
-            artifacts/installer/*.exe
-            artifacts/installer/SHA256SUMS.txt
+          name: release-${{ needs.version.outputs.version }}
+          path: release/*
+
+  # Runs after the release, so apt only gets a version that has a GitHub release,
+  # and a rerun of a failed build never tries to publish the same .deb twice.
+  apt:
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # check out packaging/telesphorepo.toml
+      id-token: write # the Telesphorepo CLI signs in with the job's identity token
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux
+          path: artifacts/packages
+
+      - name: Install the Telesphorepo CLI
+        run: curl -fsSL https://telesphorepo.com/install.sh | sh
+
+      - name: Publish the .deb to Telesphorepo
+        working-directory: packaging
+        run: telesphorepo publish ../artifacts/packages/*.deb

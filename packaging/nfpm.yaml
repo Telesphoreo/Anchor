@@ -1,0 +1,167 @@
+# nfpm config for the Linux packages (deb, rpm, archlinux).
+# Build them with scripts/build-linux-packages.ps1, which publishes the app into
+# artifacts/publish-linux, sets VERSION from installer/anchor.iss, and runs nfpm
+# from the repository root (source paths below are relative to it).
+
+name: anchor
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: 1
+section: utils
+priority: optional
+maintainer: Telesphoreo <me@telesphoreo.me>
+vendor: Telesphoreo
+homepage: https://github.com/Telesphoreo/Anchor
+license: MIT
+description: |-
+  Uses an Anker Solix power station as a UPS.
+  Anchor sits in the system tray, watches the power station over Bluetooth,
+  and shuts the computer down when wall power is gone and the battery
+  reaches the floor you set.
+
+contents:
+  # Own the app's folders, so rpm removes them on uninstall too.
+  - dst: /usr/lib/anchor
+    type: dir
+    file_info:
+      mode: 0755
+  - dst: /usr/share/licenses/anchor
+    type: dir
+    packager: rpm
+    file_info:
+      mode: 0755
+
+  # Self-contained single-file app. SkiaSharp and HarfBuzzSharp stay beside it
+  # as native libraries, which the single-file host loads from its own folder.
+  - src: artifacts/publish-linux/Anchor
+    dst: /usr/lib/anchor/Anchor
+    file_info:
+      mode: 0755
+  - src: artifacts/publish-linux/libSkiaSharp.so
+    dst: /usr/lib/anchor/libSkiaSharp.so
+    file_info:
+      mode: 0755
+  - src: artifacts/publish-linux/libHarfBuzzSharp.so
+    dst: /usr/lib/anchor/libHarfBuzzSharp.so
+    file_info:
+      mode: 0755
+  - src: /usr/lib/anchor/Anchor
+    dst: /usr/bin/anchor
+    type: symlink
+
+  - src: packaging/anchor.desktop
+    dst: /usr/share/applications/anchor.desktop
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/anchor.svg
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-16.png
+    dst: /usr/share/icons/hicolor/16x16/apps/anchor.png
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-32.png
+    dst: /usr/share/icons/hicolor/32x32/apps/anchor.png
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-48.png
+    dst: /usr/share/icons/hicolor/48x48/apps/anchor.png
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-64.png
+    dst: /usr/share/icons/hicolor/64x64/apps/anchor.png
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/anchor.png
+    file_info:
+      mode: 0644
+  - src: packaging/icons/anchor-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/anchor.png
+    file_info:
+      mode: 0644
+
+  # Debian keeps the license in /usr/share/doc/<package>/copyright.
+  - src: LICENSE
+    dst: /usr/share/doc/anchor/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: THIRD-PARTY-NOTICES.md
+    dst: /usr/share/doc/anchor/THIRD-PARTY-NOTICES.md
+    packager: deb
+    file_info:
+      mode: 0644
+  # Fedora and Arch keep licenses in /usr/share/licenses/<package>.
+  - src: LICENSE
+    dst: /usr/share/licenses/anchor/LICENSE
+    packager: rpm
+    type: license
+    file_info:
+      mode: 0644
+  - src: THIRD-PARTY-NOTICES.md
+    dst: /usr/share/licenses/anchor/THIRD-PARTY-NOTICES.md
+    packager: rpm
+    type: license
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/anchor/LICENSE
+    packager: archlinux
+    file_info:
+      mode: 0644
+  - src: THIRD-PARTY-NOTICES.md
+    dst: /usr/share/licenses/anchor/THIRD-PARTY-NOTICES.md
+    packager: archlinux
+    file_info:
+      mode: 0644
+
+# Package names differ per distro family. Besides BlueZ: the X11 libraries that
+# Avalonia.X11 loads, fontconfig and a font for SkiaSharp (Debian's and Fedora's
+# fontconfig pull in a font; Arch's does not), and OpenSSL for the update check.
+overrides:
+  deb:
+    depends:
+      - bluez
+      - libfontconfig1
+      - libice6
+      - libsm6
+      - libx11-6
+      - libxcursor1
+      - libxext6
+      - libxfixes3
+      - libxi6
+      - libxrandr2
+      - libssl3t64 | libssl3
+  rpm:
+    depends:
+      - bluez
+      - fontconfig
+      - libICE
+      - libSM
+      - libX11
+      - libXcursor
+      - libXext
+      - libXfixes
+      - libXi
+      - libXrandr
+      - openssl-libs
+  archlinux:
+    depends:
+      - bluez
+      - fontconfig
+      - libice
+      - libsm
+      - libx11
+      - libxcursor
+      - libxext
+      - libxfixes
+      - libxi
+      - libxrandr
+      - openssl
+      - ttf-font
+
+archlinux:
+  packager: Telesphoreo <me@telesphoreo.me>

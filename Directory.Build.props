@@ -1,0 +1,9 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Every project also targets net10.0-windows10.0.19041.0, and a restore on Linux
+         restores all target frameworks; this lets it fetch the Windows reference packs. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+</Project>

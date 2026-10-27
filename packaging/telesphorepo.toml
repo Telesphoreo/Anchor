@@ -1,0 +1,4 @@
+server = "https://telesphorepo.com"
+repo = "debian"
+dist = "stable"
+component = "main"

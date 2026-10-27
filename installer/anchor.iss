@@ -75,14 +75,66 @@ begin
       SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
-// Remove the app-owned autostart value on uninstall. Done at runtime (not in a
-// [Registry] section) so the admin-install compile stays free of per-user-area
-// warnings, and so the value is removed from the uninstalling user's hive.
+// Remove the toast registration that ToastNotificationManagerCompat
+// (Microsoft.Toolkit.Uwp.Notifications 7.1.3) writes on first use: the key
+// Software\Classes\AppUserModelId\<AUMID>, whose CustomActivator value names a
+// COM class Software\Classes\CLSID\{<guid>} with LocalServer32 = "<exe>" <arg>
+// (and the same CLSID plus AppID\{<guid>} under HKLM when Anchor ran elevated),
+// and the icon it caches in %LOCALAPPDATA%\ToastNotificationManagerCompat\Apps.
+// Windows derives the AUMID from the exe path, so find the registration by the
+// activator that launches this install's exe instead of computing the AUMID.
+// The 64-bit app writes Classes\CLSID in the 64-bit view, which a 32-bit
+// process would otherwise see redirected to Wow6432Node.
+procedure RemoveToastRegistration;
+var
+  Aumids: TArrayOfString;
+  I: Integer;
+  ExeArg, AumidKey, Activator, Server, IconFolder: String;
+begin
+  ExeArg := Lowercase('"' + ExpandConstant('{app}\{#MyAppExeName}') + '"');
+  if not RegGetSubkeyNames(HKEY_CURRENT_USER_64, 'Software\Classes\AppUserModelId', Aumids) then
+    Exit;
+
+  for I := 0 to GetArrayLength(Aumids) - 1 do
+  begin
+    AumidKey := 'Software\Classes\AppUserModelId\' + Aumids[I];
+    if RegQueryStringValue(HKEY_CURRENT_USER_64, AumidKey, 'CustomActivator', Activator) and
+       RegQueryStringValue(HKEY_CURRENT_USER_64, 'Software\Classes\CLSID\' + Activator + '\LocalServer32', '', Server) and
+       (Pos(ExeArg, Lowercase(Server)) = 1) then
+    begin
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER_64, AumidKey);
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER_64, 'Software\Classes\CLSID\' + Activator);
+
+      if RegQueryStringValue(HKEY_LOCAL_MACHINE_64, 'Software\Classes\CLSID\' + Activator + '\LocalServer32', '', Server) and
+         (Pos(ExeArg, Lowercase(Server)) = 1) then
+      begin
+        RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE_64, 'Software\Classes\CLSID\' + Activator);
+        RegDeleteKeyIncludingSubkeys(HKEY_LOCAL_MACHINE_64, 'Software\Classes\AppID\' + Activator);
+      end;
+
+      // The toolkit names the icon folder after the AUMID, or after the CLSID
+      // (without braces) when the AUMID holds a slash.
+      if Pos('/', Aumids[I]) > 0 then
+        IconFolder := Copy(Activator, 2, Length(Activator) - 2)
+      else
+        IconFolder := Aumids[I];
+      DelTree(ExpandConstant('{localappdata}\ToastNotificationManagerCompat\Apps\') + IconFolder, True, True, True);
+    end;
+  end;
+end;
+
+// Remove the app-owned autostart value and toast registration on uninstall.
+// Done at runtime (not in a [Registry] section) so the admin-install compile
+// stays free of per-user-area warnings, and so the values are removed from the
+// uninstalling user's hive.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     RegDeleteValue(HKEY_CURRENT_USER,
       'Software\Microsoft\Windows\CurrentVersion\Run', 'Anchor');
+    RemoveToastRegistration;
+  end;
 end;
 
 // Note: the user's config at %APPDATA%\Anchor is intentionally left in place on uninstall.
