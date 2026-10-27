@@ -104,6 +104,9 @@ begin
     begin
       RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER_64, AumidKey);
       RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER_64, 'Software\Classes\CLSID\' + Activator);
+      // Windows keeps the user's notification preferences for the AUMID here.
+      RegDeleteKeyIncludingSubkeys(HKEY_CURRENT_USER_64,
+        'Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\' + Aumids[I]);
 
       if RegQueryStringValue(HKEY_LOCAL_MACHINE_64, 'Software\Classes\CLSID\' + Activator + '\LocalServer32', '', Server) and
          (Pos(ExeArg, Lowercase(Server)) = 1) then
