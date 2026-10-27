@@ -18,8 +18,9 @@ internal sealed class BlueZScanner : IBleScanner
 
     /// <summary>
     /// Run an LE discovery on the default adapter. BlueZ keeps device objects
-    /// after they go quiet, so a device is reported only once its RSSI updates
-    /// during this discovery; after that, every update to it is reported.
+    /// after they go quiet, so a device is reported only once its RSSI or
+    /// ManufacturerData updates during this discovery; after that, every
+    /// update to it is reported.
     /// </summary>
     public async Task ScanAsync(TimeSpan duration, Action<BleAdvertisement> onAdvertisement, CancellationToken ct)
     {
@@ -39,7 +40,11 @@ internal sealed class BlueZScanner : IBleScanner
                 if (!devices.TryGetValue(path, out var device))
                     devices[path] = device = new DeviceState([]);
                 device.Update(changed, invalidated);
-                if (changed.ContainsKey("RSSI"))
+
+                // BlueZ only re-emits RSSI on a change of 8 dBm or more while
+                // another client keeps discovery running; with DuplicateData
+                // every advertisement re-emits ManufacturerData instead.
+                if (changed.ContainsKey("RSSI") || changed.ContainsKey("ManufacturerData"))
                     device.Heard = true;
                 advertisement = device.Heard ? device.ToAdvertisement() : null;
             }

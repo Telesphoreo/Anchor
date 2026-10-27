@@ -64,7 +64,10 @@ internal static class BlueZ
     public static Task CallAsync(string path, string @interface, string member) =>
         Bus.CallMethodAsync(CreateCall(path, @interface, member));
 
-    /// <summary>Restrict this client's discovery on the adapter to LE.</summary>
+    /// <summary>
+    /// Restrict this client's discovery on the adapter to LE, with duplicate
+    /// detection off so every advertisement re-emits ManufacturerData.
+    /// </summary>
     public static Task SetLeDiscoveryFilterAsync(string adapterPath)
     {
         using var writer = Bus.GetMessageWriter();
@@ -73,6 +76,9 @@ internal static class BlueZ
         writer.WriteDictionaryEntryStart();
         writer.WriteString("Transport");
         writer.WriteVariantString("le");
+        writer.WriteDictionaryEntryStart();
+        writer.WriteString("DuplicateData");
+        writer.WriteVariantBool(true);
         writer.WriteDictionaryEnd(start);
         return Bus.CallMethodAsync(writer.CreateMessage());
     }
