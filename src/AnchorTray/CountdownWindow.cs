@@ -8,8 +8,9 @@ namespace Anchor;
 
 /// <summary>
 /// Topmost countdown window shown while a shutdown is pending. The only way
-/// to stop the shutdown from here is the "Cancel shutdown" button; closing
-/// the window only hides the countdown.
+/// to stop the shutdown from here is the "Cancel shutdown" button. The title
+/// bar's close button and Alt+F4 are ignored, so closing the window is never
+/// mistaken for cancelling.
 /// </summary>
 public sealed class CountdownWindow : Window
 {
@@ -75,6 +76,11 @@ public sealed class CountdownWindow : Window
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += (_, _) => RefreshCountdown();
         _timer.Start();
+        Closing += (_, e) =>
+        {
+            if (e.CloseReason == WindowCloseReason.WindowClosing && !e.IsProgrammatic)
+                e.Cancel = true;
+        };
         Closed += (_, _) => _timer.Stop();
         RefreshCountdown();
     }
