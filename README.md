@@ -38,7 +38,9 @@ Windows will probably complain because the installer isn't signed. Click "More i
 
 Anchor is built for KDE Plasma 6 on x64. Other desktops with a system tray may work, but I don't test them. GNOME has no tray unless you install the AppIndicator extension.
 
-On Kubuntu, Debian, or Ubuntu, add the Anchor apt repo so updates come through apt and Discover:
+Add the package repo for your distro, so updates come through your package manager like any other app.
+
+On Kubuntu, Debian, or Ubuntu (updates also show in Discover):
 
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings
@@ -47,6 +49,27 @@ echo "deb [signed-by=/etc/apt/keyrings/telesphorepo.asc] https://telesphorepo.co
   | sudo tee /etc/apt/sources.list.d/telesphorepo.list
 sudo apt update
 sudo apt install anchor
+```
+
+On CachyOS or Arch:
+
+```sh
+curl -fsSL https://telesphorepo.com/arch/arch/key.asc -o /tmp/telesphorepo.asc
+sudo pacman-key --add /tmp/telesphorepo.asc
+sudo pacman-key --lsign-key "$(gpg --with-colons --show-keys /tmp/telesphorepo.asc | awk -F: '/^fpr/ {print $10; exit}')"
+printf '\n[arch]\nSigLevel = Required\nServer = https://telesphorepo.com/arch/$repo/$arch\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Sy anchor
+```
+
+The section must be named `[arch]`, the name of the repo in the server address.
+
+On Fedora:
+
+```sh
+sudo rpm --import https://telesphorepo.com/rpm/rpm/key.asc
+printf '[telesphorepo]\nname=Telesphorepo\nbaseurl=https://telesphorepo.com/rpm/rpm/\ngpgcheck=1\nrepo_gpgcheck=1\ngpgkey=https://telesphorepo.com/rpm/rpm/key.asc\nmetadata_expire=1h\n' \
+  | sudo tee /etc/yum.repos.d/telesphorepo.repo
+sudo dnf install anchor
 ```
 
 The releases page also has a package for each distro family. Download the one for yours and install it:

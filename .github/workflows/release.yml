@@ -15,8 +15,8 @@ name: Release
 # a signed build provenance attestation. Verify a download with:
 #   gh attestation verify <file> -R Telesphoreo/Anchor
 #
-# A tag push builds and publishes the release, then publishes the .deb to the
-# Telesphorepo apt repo (packaging/telesphorepo.toml). A manual run
+# A tag push builds and publishes the release, then publishes the .deb, .rpm and
+# Arch package to their Telesphorepo repos (packaging/*/telesphorepo.toml). A manual run
 # (workflow_dispatch) builds and attests everything but only uploads it as a
 # workflow artifact.
 
@@ -174,14 +174,14 @@ jobs:
           name: release-${{ needs.version.outputs.version }}
           path: release/*
 
-  # Runs after the release, so apt only gets a version that has a GitHub release,
-  # and a rerun of a failed build never tries to publish the same .deb twice.
-  apt:
+  # Runs after the release, so the package repos only get a version that has a
+  # GitHub release, and a rerun of a failed build never publishes a package twice.
+  repos:
     if: github.ref_type == 'tag'
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: read  # check out packaging/telesphorepo.toml
+      contents: read  # check out packaging/*/telesphorepo.toml
       id-token: write # the Telesphorepo CLI signs in with the job's identity token
     steps:
       - name: Checkout
@@ -198,6 +198,15 @@ jobs:
       - name: Install the Telesphorepo CLI
         run: curl -fsSL https://telesphorepo.com/install.sh | sh
 
+      # Each folder's telesphorepo.toml names the repo for its package format.
       - name: Publish the .deb to Telesphorepo
-        working-directory: packaging
-        run: telesphorepo publish ../artifacts/packages/*.deb
+        working-directory: packaging/debian
+        run: telesphorepo publish ../../artifacts/packages/*.deb
+
+      - name: Publish the .rpm to Telesphorepo
+        working-directory: packaging/rpm
+        run: telesphorepo publish ../../artifacts/packages/*.rpm
+
+      - name: Publish the Arch package to Telesphorepo
+        working-directory: packaging/arch
+        run: telesphorepo publish ../../artifacts/packages/*.pkg.tar.zst
