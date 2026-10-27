@@ -248,20 +248,13 @@ public class C1000 : SolixBleDevice, ISolixUpsDevice
         await SendCommandAsync(
             Convert.FromHexString("4040"), Convert.FromHexString("a10121")).ConfigureAwait(false);
 
-        var packet1 = await ListenForPacketAsync(
+        // The reply is reassembled from its fragments and decrypted before it is handed over.
+        var payload = await ListenForPacketAsync(
             Convert.FromHexString("03010f"), Convert.FromHexString("c840")).ConfigureAwait(false);
-        if (packet1 is null || packet1.Length == 0)
-            throw new TimeoutException("Timed out waiting for packet 1!");
+        if (payload is null || payload.Length == 0)
+            throw new TimeoutException("Timed out waiting for payload!");
 
-        var packet2 = await ListenForPacketAsync(
-            Convert.FromHexString("03010f"), Convert.FromHexString("c840")).ConfigureAwait(false);
-        if (packet2 is null || packet2.Length == 0)
-            throw new TimeoutException("Timed out waiting for packet 2!");
-
-        // We need to ignore the first byte of each packet with these types.
-        var newPayload = packet1[1..].Concat(packet2[1..]).ToArray();
-        var decryptedPayload = DecryptPayload(newPayload);
-        var parameters = ParsePayload(decryptedPayload);
+        var parameters = ParsePayload(payload);
         SolixLog.Debug($"Parameters: {ParametersToDebugString(parameters)}");
         return parameters;
     }

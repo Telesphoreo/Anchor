@@ -1,7 +1,7 @@
 namespace SolixBle.Devices;
 
 /// <summary>
-/// C1000(X) Gen 2 Power Station (A1763). Uses the same encryption and telemetry
+/// C1000(X) Gen 2 Power Station (A1763; the A1765 shares its build). Uses the same encryption and telemetry
 /// framing as the gen-1 models but with different command codes: it must be sent
 /// a subscribe command ("4100") after connecting before it streams any telemetry,
 /// its telemetry arrives on commands "c421"/"c900", its AC output is controlled

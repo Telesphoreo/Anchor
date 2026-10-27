@@ -5,7 +5,7 @@ Anchor incorporates third-party software. The notices below apply to that softwa
 ## SolixBLE
 
 `src/SolixBle` is a derivative C# port of [flip-dots/SolixBLE](https://github.com/flip-dots/SolixBLE),
-ported as of commit `bb2d39822458108f2f98232195b83c489d4531b5`. The upstream project is licensed
+ported as of commit `6d8284142c5c747dcca29cd29d032970ee0a7e04`. The upstream project is licensed
 under the MIT License, reproduced verbatim below.
 
 ```

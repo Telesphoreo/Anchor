@@ -20,7 +20,7 @@ There's a dry run mode if you want to test your settings without actually shutti
 
 ## Which models work
 
-The C1000X and C1000 Gen 2 are tested and working. The C300, C800, F2000, F2600, and F3800 should also work but I haven't personally tested them.
+The C1000X and C1000 Gen 2 are tested and working. The C300, C800, F2000, F2600, and F3800 should also work but I haven't personally tested them. Pick C1000G2 for a C1000 Plus or C1000X Gen 2, and F3800 for an F3800 Plus.
 
 Other Anker stuff (Solarbank, PowerCore chargers, power banks) won't work. They either don't broadcast the data Anchor needs or don't make sense as a PC backup.
 
@@ -36,7 +36,9 @@ Anchor sets itself to start with Windows by default. You can change this in Sett
 
 ## Getting started
 
-Click the Anchor icon in your system tray and open Settings. Hit Scan to find your power station, pick it from the list, tell Anchor which model it is, and set your battery floor (the percentage where Anchor starts the shutdown countdown). Save, and Anchor connects and starts watching.
+Click the Anchor icon in your system tray and open Settings. Hit Scan to find your power station, pick it from the list, tell Anchor which model it is (newer stations announce their model, and Anchor picks it for you), and set your battery floor (the percentage where Anchor starts the shutdown countdown). Save, and Anchor connects and starts watching.
+
+Some newer firmware asks you to approve a new computer the first time it connects. If Anchor doesn't connect, check the log: when it says the station is waiting for confirmation, press the Bluetooth/IoT button on the station within the time it gives.
 
 Leave dry run on for your first test if you want to confirm everything works before trusting it with a real shutdown.
 

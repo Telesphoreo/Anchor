@@ -2,6 +2,7 @@ using System.Globalization;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Radios;
+using Windows.Storage.Streams;
 
 namespace SolixBle;
 
@@ -48,7 +49,8 @@ public static class SolixScanner
 
     /// <summary>
     /// Scans the BLE neighborhood for Solix BLE device(s) and returns a list of
-    /// nearby devices based upon detection of a known advertised UUID.
+    /// nearby devices that advertise the Solix service UUID or carry the Anker
+    /// manufacturer record, with the model the record or name identifies.
     /// </summary>
     /// <param name="timeout">Time to scan for devices (default 5 s).</param>
     /// <param name="ct">Cancellation token aborting the scan.</param>
@@ -69,30 +71,45 @@ public static class SolixScanner
                 $"Found generic BT device '{args.BluetoothAddress:X12}' with local name '{args.Advertisement.LocalName}'");
 
             var hasIdentifier = args.Advertisement.ServiceUuids.Contains(SolixConst.UuidIdentifier);
+            var record = ReadAnkerRecord(args.Advertisement);
 
             lock (gate)
             {
                 var name = args.Advertisement.LocalName ?? string.Empty;
                 if (found.TryGetValue(args.BluetoothAddress, out var existing))
                 {
-                    // The local name may only arrive on a later advertisement or
-                    // scan response (which may lack the service UUIDs);
-                    // update the record if a non-empty one shows up.
+                    // The local name and the manufacturer record may only arrive
+                    // on a later advertisement or scan response (which may lack
+                    // the service UUIDs); update the entry when they show up.
                     var newName = string.IsNullOrEmpty(name) ? existing.Name : name;
+                    var productType = record?.ProductType ?? existing.ProductType;
                     found[args.BluetoothAddress] = existing with
                     {
                         Name = newName,
                         Rssi = args.RawSignalStrengthInDBm,
+                        ProductType = productType,
+                        Capability = record?.Capability ?? existing.Capability,
+                        SuggestedModel = SolixDeviceFactory.SuggestModel(productType, newName),
                     };
                 }
-                else if (hasIdentifier)
+
+                // A passive scan can miss the services; the record is always there.
+                else if (hasIdentifier || record is not null)
                 {
-                    SolixLog.Debug($"Found Anker device '{args.BluetoothAddress:X12}' with local name '{name}'");
+                    SolixLog.Debug(
+                        $"Found Anker device '{args.BluetoothAddress:X12}' with local name '{name}'" +
+                        (record is null
+                            ? ""
+                            : $", product type {record.ProductType}, sku '{record.Sku}'," +
+                              $" capability {(record.Capability is { } c ? c.ToString("x2") : "none")}"));
                     found[args.BluetoothAddress] = new DiscoveredDevice(
                         args.BluetoothAddress,
                         AddressToMac(args.BluetoothAddress),
                         name,
-                        args.RawSignalStrengthInDBm);
+                        args.RawSignalStrengthInDBm,
+                        record?.ProductType,
+                        record?.Capability,
+                        SolixDeviceFactory.SuggestModel(record?.ProductType, name));
                 }
             }
         };
@@ -111,6 +128,24 @@ public static class SolixScanner
         {
             return found.Values.ToList();
         }
+    }
+
+    /// <summary>Decode the Anker record of an advertisement, if it carries a well-formed one.</summary>
+    private static AnkerAdvertisement? ReadAnkerRecord(BluetoothLEAdvertisement advertisement)
+    {
+        foreach (var manufacturerData in advertisement.GetManufacturerDataByCompanyId(SolixConst.AnkerCompanyId))
+        {
+            var data = new byte[manufacturerData.Data.Length];
+            using (var reader = DataReader.FromBuffer(manufacturerData.Data))
+            {
+                reader.ReadBytes(data);
+            }
+
+            if (AnkerAdvertisement.Parse(data) is { } record)
+                return record;
+        }
+
+        return null;
     }
 
     /// <summary>Convert a MAC address string ("AA:BB:CC:DD:EE:FF") to a Bluetooth address.</summary>

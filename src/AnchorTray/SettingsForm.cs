@@ -138,11 +138,6 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 3, 0, 3),
             Text = config.DeviceMac,
         };
-        _deviceList.SelectedIndexChanged += (_, _) =>
-        {
-            if (_deviceList.SelectedItems.Count > 0)
-                _macBox.Text = _deviceList.SelectedItems[0].SubItems[1].Text;
-        };
 
         var modelLabel = new Label
         {
@@ -161,6 +156,18 @@ public sealed class SettingsForm : Form
         foreach (var model in SelectableModels)
             _modelBox.Items.Add(model);
         _modelBox.SelectedItem = config.ParseModel();
+
+        _deviceList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_deviceList.SelectedItems.Count == 0)
+                return;
+            var selected = _deviceList.SelectedItems[0];
+            _macBox.Text = selected.SubItems[1].Text;
+
+            // The advertised product type (or name) identifies the model on newer firmware.
+            if (selected.Tag is DiscoveredDevice { SuggestedModel: { } model } && SelectableModels.Contains(model))
+                _modelBox.SelectedItem = model;
+        };
 
         deviceTable.Controls.Add(scanRow, 0, 0);
         deviceTable.SetColumnSpan(scanRow, 2);
@@ -337,7 +344,7 @@ public sealed class SettingsForm : Form
             foreach (var device in devices.OrderByDescending(d => d.Rssi))
             {
                 var name = string.IsNullOrEmpty(device.Name) ? "(unnamed)" : device.Name;
-                _deviceList.Items.Add(new ListViewItem([name, device.Mac, device.Rssi.ToString()]));
+                _deviceList.Items.Add(new ListViewItem([name, device.Mac, device.Rssi.ToString()]) { Tag = device });
             }
 
             if (devices.Count == 0)

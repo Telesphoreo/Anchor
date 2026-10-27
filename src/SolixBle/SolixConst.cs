@@ -45,47 +45,50 @@ internal static class SolixConst
     /// <summary>Bool value for unknown boolean attributes.</summary>
     public static readonly bool? DefaultMetadataBool = null;
 
-    /// <summary>Command used to initiate negotiations.</summary>
-    public const string NegotiationCommand0 =
-        "ff0936000300010001a10442ad8c69a22462326463306231372d623735642d346162662d626136652d656337633939376332336537b9";
+    /// <summary>The client identifier sent to the device during negotiation (and registered in x027).</summary>
+    public const string ClientId = "b2dc0b17-b75d-4abf-ba6e-ec7c997c23e7";
 
-    /// <summary>Response to receiving 1st negotiation message.</summary>
-    public const string NegotiationCommand1 =
-        "ff093d000300010003a10442ad8c69a22462326463306231372d623735642d346162662d626136652d656337633939376332336537a30120a40200f064";
+    /// <summary>The pattern of negotiation packets sent to the device.</summary>
+    public static readonly byte[] NegotiationPattern = [0x03, 0x00, 0x01];
 
-    /// <summary>Response to receiving 2nd negotiation message.</summary>
-    public const string NegotiationCommand2 =
-        "ff0936000300010029a10442ad8c69a22462326463306231372d623735642d346162662d626136652d65633763393937633233653791";
+    /// <summary>The pattern of session commands sent to the device.</summary>
+    public static readonly byte[] CommandPattern = [0x03, 0x00, 0x0F];
 
-    /// <summary>Response to receiving 3rd negotiation message.</summary>
-    public const string NegotiationCommand3 =
-        "ff0940000300010005a10443ad8c69a22462326463306231372d623735642d346162662d626136652d656337633939376332336537a30120a40200f0a50140fa";
+    /// <summary>Pattern channel of negotiation requests, replies and the grant.</summary>
+    public const byte ChannelNegotiation = 0x01;
 
-    /// <summary>Response to receiving 4th negotiation message.</summary>
-    public const string NegotiationCommand4 =
-        "ff094c000300010021a140060ea168f232aedb37fb2d120c49180329ac72ab5ec3eb8fd30a2f252dc5e151dabccd9b1dc1e288704ca760a0d8c918e5c94823a1f609a4bf07fb4c33ee219085";
+    /// <summary>Pattern channel of session commands, replies and pushes.</summary>
+    public const byte ChannelSession = 0x0F;
 
-    /// <summary>Response to receiving 5th negotiation message.</summary>
-    public const string NegotiationCommand5 =
-        "ff095a000300014022580bc0532a53c739adf3da7b994a7b5f221bcc16bab6392c215cb4faaf41d9d58e2c81c016e474c78eed5569147cb74a1f22ca2b3fad2e209dbbcfbdaca352034a6c479f055f68581b5f1e22348809f526";
+    /// <summary>Pattern channel of app session pushes.</summary>
+    public const byte ChannelApp = 0x11;
 
-    /// <summary>
-    /// The unix timestamp (hex, little-endian) that is agreed upon in the negotiations.
-    /// Used to protect against replay attacks: commands must contain the current encrypted time.
-    /// </summary>
-    public const string BaseTimestamp = "42ad8c69";
+    /// <summary>Message type handled as telemetry on every model ("0300" / "4300").</summary>
+    public const int TelemetryMsgType = 0x300;
+
+    /// <summary>TLV tags start at 0xa1; a lower first payload byte is a reply's status.</summary>
+    public const byte StatusLimit = 0xA1;
 
     /// <summary>
-    /// The private key used to perform the ECDH negotiation to get a shared secret
-    /// which is then used as an AES key/IV for encrypting communications.
+    /// Static AES-GCM key, nonce and additional authenticated data of the
+    /// encrypted negotiation outer before the ECDH shared secret exists.
     /// </summary>
-    public const string PrivateKey = "7dfbea61cd95cee49c458ad7419e817f1ade9a66136de3c7d5787af1458e39f4";
+    public const string NegotiationKey = "b8ff7422955d4eb6d554a2c470280559";
 
-    /// <summary>X coordinate of the public key matching <see cref="PrivateKey"/> (as sent in negotiation command 4).</summary>
-    public const string ClientPublicQx = "060ea168f232aedb37fb2d120c49180329ac72ab5ec3eb8fd30a2f252dc5e151";
+    /// <inheritdoc cref="NegotiationKey"/>
+    public const string NegotiationNonce = "6ba3e3f2f3a60f2971ce5d1f";
 
-    /// <summary>Y coordinate of the public key matching <see cref="PrivateKey"/> (as sent in negotiation command 4).</summary>
-    public const string ClientPublicQy = "dabccd9b1dc1e288704ca760a0d8c918e5c94823a1f609a4bf07fb4c33ee2190";
+    /// <inheritdoc cref="NegotiationKey"/>
+    public const string NegotiationAad = "3322110077665544bbaa9988ffeeddcc";
+
+    /// <summary>POSIX time zone sent to the device if the system time zone cannot be expressed as one.</summary>
+    public const string FallbackTimeZone = "GMT0BST,M3.5.0/1,M10.5.0";
+
+    /// <summary>BLE company identifier Anker publishes its advertisement record under.</summary>
+    public const ushort AnkerCompanyId = 0xFFFF;
+
+    /// <summary>Advertised capability bit: the device accepts the encrypted (4xxx) negotiation.</summary>
+    public const byte CapabilityEncryptedEcdh = 0x04;
 }
 
 /// <summary>

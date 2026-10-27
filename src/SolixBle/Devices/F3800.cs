@@ -11,12 +11,36 @@ public class F3800 : SolixBleDevice, ISolixUpsDevice
 {
     private const int ExpectedTelemetryLength = 253;
 
+    /// <summary>
+    /// Command sent after connecting to start the telemetry stream. Like the
+    /// C1000(X) Gen 2, the F3800 streams nothing until it receives this command.
+    /// </summary>
+    private const string CmdSubscribe = "4040";
+    private const string SubscribePayload = "a10121";
+
+    /// <summary>The F3800 pushes its telemetry on "c840" in addition to the gen-1 codes.</summary>
+    private static readonly string[] F3800TelemetryCommands = ["c840", "c402", "4300", "c405"];
+
     public F3800(ulong bluetoothAddress, string? name = null) : base(bluetoothAddress, name)
     {
     }
 
     public F3800(DiscoveredDevice device) : base(device)
     {
+    }
+
+    /// <inheritdoc/>
+    protected override IReadOnlyList<string> TelemetryCommands => F3800TelemetryCommands;
+
+    /// <summary>
+    /// Subscribe to telemetry once connected. The F3800 completes the encrypted
+    /// handshake but streams no telemetry until it receives this command, so it
+    /// is sent after every (re)connection.
+    /// </summary>
+    protected override async Task PostConnectAsync()
+    {
+        await SendCommandAsync(
+            Convert.FromHexString(CmdSubscribe), Convert.FromHexString(SubscribePayload)).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -1,13 +1,12 @@
-using System.Buffers.Binary;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace SolixBle;
 
 /// <summary>
 /// Solix BLE device object (port of SolixBLE <c>device.py</c>). Handles the
-/// packet framing, TLV telemetry parsing, fragment reassembly, the six-stage
-/// encryption negotiation, encrypted command sending and automatic reconnection.
+/// packet routing, TLV telemetry parsing, fragment reassembly, the encryption
+/// negotiation (plain or encrypted outer), encrypted command sending and
+/// automatic reconnection.
 /// </summary>
 public class SolixBleDevice : IAsyncDisposable
 {
@@ -22,12 +21,10 @@ public class SolixBleDevice : IAsyncDisposable
     private string? _bleName;
 
     private GattClient? _client;
-    private Dictionary<string, Dictionary<int, byte[]>> _fragmentBuffers = new();
-    private Dictionary<string, int> _fragmentTotals = new();
+    private Dictionary<string, List<byte[]>> _fragmentBuffers = new();
     private Dictionary<string, byte[]>? _data;
     private DateTimeOffset? _lastDataTimestamp;
     private DateTimeOffset? _lastPacketTimestamp;
-    private DateTimeOffset? _negotiationTimestamp;
     private Dictionary<string, List<TaskCompletionSource<byte[]>>> _packetFutures = new();
     private readonly object _futuresGate = new();
     private readonly object _notificationGate = new();
@@ -36,6 +33,7 @@ public class SolixBleDevice : IAsyncDisposable
     private CancellationTokenSource? _autoReconnectCts;
     private readonly AsyncEvent _disconnectEvent = new();
     private int _connectionAttempts;
+    private HashSet<int>? _telemetryMsgTypes;
 
     /// <summary>
     /// Latched when the transport reports a lost link for the current client;
@@ -44,7 +42,21 @@ public class SolixBleDevice : IAsyncDisposable
     /// handles from the dead session remain stale.
     /// </summary>
     private volatile bool _linkLost;
-    private byte[]? _sharedSecret;
+
+    /// <summary>
+    /// The latest negotiation. Kept across a drop so <see cref="ConnectAsync"/>
+    /// can still tell whether the device answered it; a new connection replaces it.
+    /// </summary>
+    private NegotiatedSession? _session;
+
+    /// <summary>
+    /// The outer protocol to open with: the advertised hint, else plain, then
+    /// whichever outer last authorized on this instance.
+    /// </summary>
+    private NegotiationOuter _outer = NegotiationOuter.Plain;
+
+    /// <summary>Why <see cref="_outer"/> was chosen, for the negotiation log line.</summary>
+    private string _outerReason = "default";
 
     /// <summary>Initialise device object. Does not connect automatically.</summary>
     /// <param name="bluetoothAddress">Bluetooth address of the device.</param>
@@ -56,9 +68,20 @@ public class SolixBleDevice : IAsyncDisposable
         SolixLog.Debug($"Initializing Solix device '{Name}' with address '{Address}'");
     }
 
-    /// <summary>Initialise device object from a scan result. Does not connect automatically.</summary>
+    /// <summary>
+    /// Initialise device object from a scan result. Does not connect
+    /// automatically. The advertised capability byte, if any, tells which
+    /// negotiation the device accepts; without it plain is tried first and
+    /// corrected if refused.
+    /// </summary>
     public SolixBleDevice(DiscoveredDevice device) : this(device.Address, device.Name)
     {
+        if (device.Capability is not { } capability)
+            return;
+        _outer = (capability & SolixConst.CapabilityEncryptedEcdh) != 0
+            ? NegotiationOuter.Encrypted
+            : NegotiationOuter.Plain;
+        _outerReason = $"advertised capability {capability:x2}";
     }
 
     /// <summary>
@@ -79,7 +102,7 @@ public class SolixBleDevice : IAsyncDisposable
     /// Has an encrypted session been successfully negotiated. This does not mean
     /// that any data values have been populated; use <see cref="Available"/> for that.
     /// </summary>
-    public bool Negotiated => Connected && _sharedSecret is not null;
+    public bool Negotiated => Connected && !_linkLost && _session is { Authorized: true };
 
     /// <summary>Connected to device and telemetry data is available.</summary>
     public bool Available => Negotiated && _data is not null;
@@ -125,24 +148,41 @@ public class SolixBleDevice : IAsyncDisposable
     /// <summary>
     /// Command codes (hex) that carry telemetry for this device. Subclasses can
     /// override this if their model uses different telemetry command codes.
+    /// Matched on the message type whatever the fragment and encryption flags.
     /// </summary>
     protected virtual IReadOnlyList<string> TelemetryCommands => DefaultTelemetryCommands;
 
     /// <summary>
     /// Some firmwares advance from stage 0 to stage 1, drop the Windows BLE
     /// link before sending the stage-1 notification, then accept the stage-1
-    /// response after reconnecting.
+    /// response after reconnecting. When set, the first such drop on the plain
+    /// outer reconnects and resumes at x003 before the drop is treated as a
+    /// refusal of the plain outer.
     /// </summary>
     protected virtual bool ResumeNegotiationAfterStage0Disconnect => false;
 
     /// <summary>
     /// Connect to device. This will connect to the device, negotiate an encrypted
     /// session and subscribe to status updates, returning true if successful.
+    /// If the device drops the link before answering the plain negotiation
+    /// (how hardened firmware refuses it), this reconnects once with the
+    /// encrypted negotiation and remembers which one worked.
     /// </summary>
     /// <param name="maxAttempts">Maximum number of attempts to try to connect (default 3).</param>
     /// <param name="runCallbacks">Execute registered callbacks on successful connection (default true).</param>
     /// <param name="ct">Cancellation token aborting the connection attempt.</param>
-    public async Task<bool> ConnectAsync(int maxAttempts = 3, bool runCallbacks = true, CancellationToken ct = default)
+    public Task<bool> ConnectAsync(int maxAttempts = 3, bool runCallbacks = true, CancellationToken ct = default) =>
+        ConnectAsync(maxAttempts, runCallbacks, _outer, _outerReason, fallback: false, ct);
+
+    /// <summary>Connect and negotiate on the given outer protocol.</summary>
+    /// <param name="fallback">Whether this is the encrypted reopen after a refused plain outer.</param>
+    private async Task<bool> ConnectAsync(
+        int maxAttempts,
+        bool runCallbacks,
+        NegotiationOuter outer,
+        string outerReason,
+        bool fallback,
+        CancellationToken ct)
     {
         _connectionAttempts++;
 
@@ -154,6 +194,7 @@ public class SolixBleDevice : IAsyncDisposable
 
             // Reset negotiated details but keep any data.
             ResetSession(resetData: false);
+            _session = null;
 
             // Make a new client and connect (resolve device, find characteristics,
             // subscribe to notifications).
@@ -190,95 +231,18 @@ public class SolixBleDevice : IAsyncDisposable
         }
 
         // Negotiate.
-        try
-        {
-            using var negotiationCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            negotiationCts.CancelAfter(SolixConst.NegotiationTimeout);
-            var stage0Sent = false;
-            var stage1ResumeAttempted = false;
+        var resumed = await NegotiateAsync(outer, outerReason, fallback, ct).ConfigureAwait(false);
+        if (resumed is null)
+            return await ReopenIfRefusedAsync(maxAttempts, runCallbacks, outer, ct).ConfigureAwait(false);
 
-            // While negotiations have not completed.
-            while (!Negotiated)
-            {
-                // The link can die mid-negotiation; bail out instead of
-                // spinning against a dead client until the overall timeout.
-                // Connected alone is not enough: MaintainConnection makes the
-                // OS silently re-link, but our characteristic handles from the
-                // dead session stay stale; a fresh ConnectAsync is required.
-                if (_linkLost || !Connected)
-                {
-                    if (ResumeNegotiationAfterStage0Disconnect
-                        && stage0Sent
-                        && !stage1ResumeAttempted
-                        && _lastPacketTimestamp is null)
-                    {
-                        SolixLog.Warning(
-                            $"Connection to '{Name}' was lost after negotiation stage 0; reconnecting to resume at stage 1...");
-                        stage1ResumeAttempted = true;
-
-                        await DisposeOfClientAsync().ConfigureAwait(false);
-                        ResetSession(resetData: false);
-                        await ConnectTransportAsync(maxAttempts: 1, negotiationCts.Token).ConfigureAwait(false);
-
-                        if (!Connected)
-                        {
-                            SolixLog.Error($"Failed to reconnect to '{Name}' for negotiation resume!");
-                            return false;
-                        }
-
-                        SolixLog.Debug($"Sending negotiation stage 1 resume request to '{Name}'...");
-                        await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand1).ConfigureAwait(false);
-                        _lastPacketTimestamp = DateTimeOffset.UtcNow;
-                        continue;
-                    }
-
-                    SolixLog.Error($"Connection to '{Name}' was lost during negotiation!");
-                    return false;
-                }
-
-                // If we have not received any packet from the device in any
-                // stage then restart negotiations from the start.
-                var lastPacket = _lastPacketTimestamp;
-                if (lastPacket is null ||
-                    DateTimeOffset.UtcNow - lastPacket.Value > SolixConst.NegotiationResponseTimeout)
-                {
-                    SolixLog.Debug($"Sending negotiation initiation request to '{Name}'...");
-                    try
-                    {
-                        await InitiateNegotiationsAsync(negotiationCts.Token).ConfigureAwait(false);
-                        stage0Sent = true;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        // A failed write usually means the link just dropped;
-                        // the Connected check above ends the loop next pass.
-                        SolixLog.Warning($"Failed to send negotiation request to '{Name}': {ex.Message}");
-                    }
-                }
-
-                // Wait to see if we get any response to our initial request.
-                // This weird layout allows us to exit immediately when
-                // negotiation occurs.
-                for (var i = 0; i < (int)SolixConst.NegotiationResponseTimeout.TotalSeconds; i++)
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1), negotiationCts.Token).ConfigureAwait(false);
-                    if (Negotiated || _linkLost || !Connected)
-                        break;
-                }
-            }
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            SolixLog.Error($"Timed out attempting to negotiate with '{Name}'!");
-            return false;
-        }
+        // Use the same outer first on the next connection to this device.
+        _outer = _session!.Outer;
+        _outerReason = "remembered from the last authorized connection";
 
         // If negotiations succeeded.
-        SolixLog.Debug($"Negotiations with '{Name}' succeeded!");
+        SolixLog.Debug(
+            $"Negotiations with '{Name}' succeeded on the {NegotiatedSession.OuterName(_outer)} outer" +
+            $"{(resumed.Value ? " after resuming at stage 1" : "")}!");
         _connectionAttempts = 0;
 
         // Clear disconnect event if set.
@@ -310,6 +274,187 @@ public class SolixBleDevice : IAsyncDisposable
             RunStateChangedCallbacks();
 
         return true;
+    }
+
+    /// <summary>
+    /// Run the negotiation until it succeeds, fails, or the link drops.
+    /// </summary>
+    /// <param name="fallback">
+    /// Give up once the opening goes unanswered for a response timeout, so a
+    /// device that ignores the encrypted outer returns to auto-reconnect (and
+    /// the plain outer) without waiting out the whole negotiation timeout.
+    /// </param>
+    /// <returns>
+    /// Null if not negotiated, else whether the negotiation was resumed at
+    /// stage 1 after a stage-0 disconnect.
+    /// </returns>
+    private async Task<bool?> NegotiateAsync(
+        NegotiationOuter outer, string outerReason, bool fallback, CancellationToken ct)
+    {
+        SolixLog.Debug(
+            $"Negotiating with '{Name}' on the {NegotiatedSession.OuterName(outer)} outer ({outerReason})");
+
+        try
+        {
+            using var negotiationCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var deadline = DateTimeOffset.UtcNow + SolixConst.NegotiationTimeout;
+            negotiationCts.CancelAfter(SolixConst.NegotiationTimeout);
+            var opened = false;
+            var resumed = false;
+            var extended = false;
+
+            // While negotiations have not completed.
+            while (!Negotiated)
+            {
+                // The link can die mid-negotiation; bail out instead of
+                // spinning against a dead client until the overall timeout.
+                // Connected alone is not enough: MaintainConnection makes the
+                // OS silently re-link, but our characteristic handles from the
+                // dead session stay stale; a fresh ConnectAsync is required.
+                if (_linkLost || !Connected)
+                {
+                    if (ResumeNegotiationAfterStage0Disconnect
+                        && opened
+                        && !resumed
+                        && outer == NegotiationOuter.Plain)
+                    {
+                        SolixLog.Warning(
+                            $"Connection to '{Name}' was lost after negotiation stage 0" +
+                            $" (device {(_session is { Replied: true } ? "had" : "had not")} replied);" +
+                            " reconnecting to resume at stage 1...");
+                        resumed = true;
+
+                        await DisposeOfClientAsync().ConfigureAwait(false);
+                        ResetSession(resetData: false);
+                        try
+                        {
+                            await ConnectTransportAsync(maxAttempts: 1, negotiationCts.Token).ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            SolixLog.Debug($"Reconnect to '{Name}' for negotiation resume failed: {ex.Message}");
+                        }
+
+                        if (!Connected)
+                        {
+                            SolixLog.Error($"Failed to reconnect to '{Name}' for negotiation resume!");
+                            return null;
+                        }
+
+                        SolixLog.Debug($"Sending negotiation stage 1 resume request (0003) to '{Name}'...");
+                        _session = NewSession(NegotiationOuter.Plain);
+                        try
+                        {
+                            await _session.SendCapabilityRequestAsync().ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            SolixLog.Warning($"Failed to send negotiation resume request to '{Name}': {ex.Message}");
+                        }
+
+                        _lastPacketTimestamp = DateTimeOffset.UtcNow;
+                        continue;
+                    }
+
+                    SolixLog.Error($"Connection to '{Name}' was lost during negotiation!");
+                    return null;
+                }
+
+                // If we have not received any packet from the device in any
+                // stage then restart negotiations from the start.
+                if (NegotiationShouldRestart())
+                {
+                    if (fallback && opened && _session is { Replied: false })
+                    {
+                        SolixLog.Warning($"'{Name}' did not answer the encrypted negotiation either");
+                        return null;
+                    }
+
+                    SolixLog.Debug($"Sending negotiation initiation request to '{Name}'...");
+                    try
+                    {
+                        await InitiateNegotiationsAsync(outer).ConfigureAwait(false);
+                        opened = true;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        // A failed write usually means the link just dropped;
+                        // the Connected check above ends the loop next pass.
+                        SolixLog.Warning($"Failed to send negotiation request to '{Name}': {ex.Message}");
+                    }
+                }
+
+                // Wait to see if we get any response to our initial request.
+                // This weird layout allows us to exit immediately when
+                // negotiation occurs.
+                for (var i = 0; i < (int)SolixConst.NegotiationResponseTimeout.TotalSeconds; i++)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), negotiationCts.Token).ConfigureAwait(false);
+
+                    // A device waiting for its button gets its first
+                    // confirmation window before the negotiation times out.
+                    if (!extended
+                        && _session?.ConfirmationDeadline is { } until
+                        && until + SolixConst.NegotiationResponseTimeout > deadline)
+                    {
+                        extended = true;
+                        deadline = until + SolixConst.NegotiationResponseTimeout;
+                        negotiationCts.CancelAfter(deadline - DateTimeOffset.UtcNow);
+                        SolixLog.Debug($"Extended the negotiation with '{Name}' to the end of its confirmation window");
+                    }
+
+                    if (Negotiated || _linkLost || !Connected)
+                        break;
+                }
+            }
+
+            return resumed;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            SolixLog.Error($"Timed out attempting to negotiate with '{Name}'!");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the opening request should be sent (again): the device has sent
+    /// nothing, or nothing for <see cref="SolixConst.NegotiationResponseTimeout"/>,
+    /// and is not waiting for its button.
+    /// </summary>
+    private bool NegotiationShouldRestart()
+    {
+        if (_session?.ConfirmationDeadline is { } until && DateTimeOffset.UtcNow < until)
+            return false;
+        var lastPacket = _lastPacketTimestamp;
+        return lastPacket is null || DateTimeOffset.UtcNow - lastPacket.Value > SolixConst.NegotiationResponseTimeout;
+    }
+
+    /// <summary>
+    /// Reconnect with the encrypted outer if the device refused the plain one.
+    /// Dropping the link before any reply to the plain opening (or to the
+    /// stage-1 resume) is how hardened firmware refuses it. The outer changes
+    /// at most once per connect and never steps down from encrypted. The
+    /// encrypted outer is only remembered once it authorizes, so a failed
+    /// reopen leaves the next connect on the outer that last worked.
+    /// </summary>
+    /// <param name="outer">The outer the failed negotiation ran on.</param>
+    /// <returns>The reconnection's result, or false if nothing was refused.</returns>
+    private async Task<bool> ReopenIfRefusedAsync(
+        int maxAttempts, bool runCallbacks, NegotiationOuter outer, CancellationToken ct)
+    {
+        var replied = _session is { Replied: true };
+        if ((!_linkLost && Connected) || replied || outer != NegotiationOuter.Plain)
+            return false;
+
+        SolixLog.Info($"'{Name}' refused the plain negotiation, reopening with the encrypted one...");
+        return await ConnectAsync(
+            maxAttempts, runCallbacks, NegotiationOuter.Encrypted, "the plain outer was refused", fallback: true, ct)
+            .ConfigureAwait(false);
     }
 
     private async Task ConnectTransportAsync(int maxAttempts, CancellationToken ct)
@@ -372,6 +517,7 @@ public class SolixBleDevice : IAsyncDisposable
         // Reset session.
         _connectionAttempts = 0;
         ResetSession();
+        _session = null;
     }
 
     /// <inheritdoc cref="DisconnectAsync"/>
@@ -445,95 +591,22 @@ public class SolixBleDevice : IAsyncDisposable
         return result;
     }
 
-    /// <summary>Validate packet and split into pattern, command and payload bytes.</summary>
-    private static (byte[] Pattern, byte[] Cmd, byte[] Payload) SplitPacket(byte[] packet)
-    {
-        // Header(2) + length(2) + pattern(3) + cmd(2) + checksum(1).
-        if (packet.Length < 10)
-            throw new FormatException($"Packet is too short ({packet.Length} bytes)!");
-
-        // Validate header is correct.
-        if (packet[0] != 0xFF || packet[1] != 0x09)
-            throw new FormatException("Packet does not start with FF09!");
-
-        // Validate encoded length is correct (counts the WHOLE packet).
-        int encodedLength = BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(2));
-        if (encodedLength != packet.Length)
-            throw new FormatException(
-                $"Packet length is encoded as {encodedLength} but its length was {packet.Length}!");
-
-        // Validate checksum is correct (XOR of all preceding bytes).
-        var actualChecksum = Checksum(packet.AsSpan(0, packet.Length - 1));
-        if (packet[^1] != actualChecksum)
-            throw new FormatException(
-                $"Packet checksum is encoded as {packet[^1]:x2} but it is actually {actualChecksum:x2}!");
-
-        return (packet[4..7], packet[7..9], packet[9..^1]);
-    }
-
     /// <summary>
-    /// Parse payload bytes into parameters. Payloads contain a list of parameters
-    /// with a format of: &lt;id 1B&gt; &lt;len 1B&gt; &lt;data nB&gt;. A truncated parameter
-    /// prevents all further parameters from being parsed and is logged, but the
-    /// successfully parsed parameters (if any) are returned.
+    /// Parse payload bytes into parameters. Payloads contain an optional reply
+    /// status byte and a list of parameters with a format of:
+    /// &lt;id 1B&gt; &lt;len 1B&gt; &lt;data nB&gt;. A truncated parameter prevents all
+    /// further parameters from being parsed and is logged, but the successfully
+    /// parsed parameters (if any) are returned.
     /// </summary>
-    /// <param name="payload">Payload to parse into parameters.</param>
+    /// <param name="payload">Plain-text payload to parse into parameters.</param>
     /// <returns>Dictionary mapping parameter ids ("a1", "a2", ...) to data.</returns>
-    protected IReadOnlyDictionary<string, byte[]> ParsePayload(byte[] payload) => ParsePayloadCore(payload);
-
-    private Dictionary<string, byte[]> ParsePayloadCore(byte[] payload)
-    {
-        var parsed = new Dictionary<string, byte[]>();
-        var pos = 0;
-
-        // Payloads sometimes start with 00 and we must strip that.
-        if (payload.Length > 0 && payload[0] == 0x00)
-        {
-            SolixLog.Debug("Stripped 00 from start of payload");
-            pos = 1;
-        }
-
-        while (pos < payload.Length)
-        {
-            // Extract param id (e.g. a1, a2, ...).
-            var paramId = payload[pos].ToString("x2");
-            pos++;
-
-            // Sometimes there is just a param_id with no length or values.
-            if (pos == payload.Length)
-            {
-                parsed[paramId] = [];
-                break;
-            }
-
-            // Extract encoded length of parameter.
-            int paramLen = payload[pos];
-            pos++;
-
-            // Extract data/body from parameter. A truncated parameter stops parsing.
-            if (pos + paramLen > payload.Length)
-            {
-                SolixLog.Error(
-                    $"Unexpected end of packet! Data may be missing or invalid!" +
-                    $" Error extracting param_data (id={paramId}, len={paramLen})" +
-                    $" with only {payload.Length - pos} bytes remaining." +
-                    $" Extracted so far: '{ParametersToStr(parsed)}'." +
-                    $" Payload: '{Convert.ToHexStringLower(payload)}'");
-                break;
-            }
-
-            parsed[paramId] = payload[pos..(pos + paramLen)];
-            pos += paramLen;
-        }
-
-        return parsed;
-    }
+    protected IReadOnlyDictionary<string, byte[]> ParsePayload(byte[] payload) =>
+        SolixFrame.ParseParameters(payload, out _);
 
     private static string ParametersToStr(IReadOnlyDictionary<string, byte[]> parameters, bool types = false)
     {
         if (!types)
-            return "{" + string.Join(", ",
-                parameters.Select(p => $"'{p.Key}': '{Convert.ToHexStringLower(p.Value)}'")) + "}";
+            return SolixFrame.FormatParameters(parameters);
 
         var sb = new StringBuilder("{\n");
         foreach (var (key, value) in parameters.OrderBy(p => p.Key, StringComparer.Ordinal))
@@ -571,79 +644,54 @@ public class SolixBleDevice : IAsyncDisposable
         SolixLog.Debug(sb.ToString());
     }
 
-    /// <summary>Decrypt a telemetry payload using the negotiated shared secret and IV.</summary>
-    protected byte[] DecryptPayload(byte[] payload)
-    {
-        var secret = _sharedSecret
-            ?? throw new InvalidOperationException("No shared secret has been negotiated");
-        using var aes = Aes.Create();
-        aes.Key = secret[..16];
-        return aes.DecryptCbc(payload, secret[16..], PaddingMode.PKCS7);
-    }
-
-    /// <summary>Encrypt a payload using the negotiated shared secret and IV.</summary>
-    private byte[] EncryptPayload(byte[] payload)
-    {
-        var secret = _sharedSecret
-            ?? throw new InvalidOperationException("No shared secret has been negotiated");
-        using var aes = Aes.Create();
-        aes.Key = secret[..16];
-        return aes.EncryptCbc(payload, secret[16..], PaddingMode.PKCS7);
-    }
-
     /// <summary>
-    /// Process an encrypted telemetry packet from the device. Telemetry payloads
-    /// may be spread across multiple packets (fragments).
+    /// Re-assemble a fragmented payload. Each fragment's first byte is
+    /// index &lt;&lt; 4 | total; fragments must arrive in order (an out-of-order
+    /// one clears the buffer).
     /// </summary>
-    private void ProcessTelemetryPacket(byte[] payload, byte[] cmd)
+    /// <returns>Payload bytes once all fragments are available, else null.</returns>
+    private byte[]? Reassemble(byte[] pattern, byte[] cmd, byte[] payload)
     {
-        // First byte encodes fragment info (high nibble = index, low = total).
+        var key = Convert.ToHexStringLower(pattern) + Convert.ToHexStringLower(cmd);
+        if (payload.Length == 0)
+        {
+            SolixLog.Debug($"Dropping empty fragment for {key}");
+            return null;
+        }
+
         var fragmentIndex = (payload[0] >> 4) & 0x0F;
         var fragmentTotal = payload[0] & 0x0F;
+        SolixLog.Debug($"Received fragment {fragmentIndex}/{fragmentTotal} for {key}, {payload.Length - 1} bytes");
 
-        // Multi-part message.
-        if (fragmentTotal > 1)
+        // Get existing fragments or create the list if one does not exist.
+        if (!_fragmentBuffers.TryGetValue(key, out var fragments))
         {
-            var fragmentData = payload[1..];
-            var cmdKey = Convert.ToHexStringLower(cmd);
-            SolixLog.Debug(
-                $"Fragment {fragmentIndex}/{fragmentTotal} for cmd {cmdKey}, {fragmentData.Length} bytes");
-
-            // Store fragment (reset the buffer on first sight or index 1).
-            if (!_fragmentBuffers.ContainsKey(cmdKey) || fragmentIndex == 1)
-            {
-                _fragmentBuffers[cmdKey] = new Dictionary<int, byte[]>();
-                _fragmentTotals[cmdKey] = fragmentTotal;
-            }
-
-            _fragmentBuffers[cmdKey][fragmentIndex] = fragmentData;
-
-            // Wait until all fragments have arrived.
-            if (_fragmentBuffers[cmdKey].Count < fragmentTotal)
-            {
-                SolixLog.Debug("Waiting for remaining fragments...");
-                return;
-            }
-
-            // Reassemble in order.
-            payload = _fragmentBuffers[cmdKey]
-                .OrderBy(fragment => fragment.Key)
-                .SelectMany(fragment => fragment.Value)
-                .ToArray();
-            _fragmentBuffers.Remove(cmdKey);
-            _fragmentTotals.Remove(cmdKey);
-            SolixLog.Debug($"Reassembled payload: {payload.Length} bytes");
-        }
-        else
-        {
-            // Strip fragment info.
-            payload = payload[1..];
+            fragments = [];
+            _fragmentBuffers[key] = fragments;
         }
 
-        var decryptedPayload = DecryptPayload(payload);
-        SolixLog.Debug($"Decrypted payload: {Convert.ToHexStringLower(decryptedPayload)}");
-        var parameters = ParsePayloadCore(decryptedPayload);
-        ProcessTelemetry(parameters);
+        fragments.Add(payload[1..]);
+
+        // If out of order then ignore and clear buffers.
+        if (fragmentIndex != fragments.Count)
+        {
+            SolixLog.Debug("Fragment is out of order, ignoring and clearing buffers!");
+            fragments.Clear();
+            return null;
+        }
+
+        // If not all fragments available return.
+        if (fragmentTotal != fragments.Count)
+        {
+            SolixLog.Debug("Waiting for remaining fragments...");
+            return null;
+        }
+
+        // Assemble fragment payloads in order.
+        var complete = fragments.SelectMany(fragment => fragment).ToArray();
+        fragments.Clear();
+        SolixLog.Debug($"Reassembled payload: {complete.Length} bytes");
+        return complete;
     }
 
     /// <summary>Process telemetry data from the device.</summary>
@@ -719,7 +767,12 @@ public class SolixBleDevice : IAsyncDisposable
         }
     }
 
-    /// <summary>Process a notification from the device.</summary>
+    /// <summary>
+    /// Process a notification from the device. Frames are routed by their
+    /// header: the pattern's channel picks negotiation (01) or session (0f/11)
+    /// handling, the cmd's 0x80 flag reassembles fragments and its 0x40 flag
+    /// decrypts.
+    /// </summary>
     private async Task ProcessNotificationAsync(GattClient client, byte[] data)
     {
         if (!ReferenceEquals(client, _client))
@@ -738,7 +791,7 @@ public class SolixBleDevice : IAsyncDisposable
         byte[] payload;
         try
         {
-            (pattern, cmd, payload) = SplitPacket(data);
+            (pattern, cmd, payload) = SolixFrame.SplitPacket(data);
         }
         catch (FormatException ex)
         {
@@ -746,10 +799,53 @@ public class SolixBleDevice : IAsyncDisposable
             return;
         }
 
-        SolixLog.Debug($"Pattern: {Convert.ToHexStringLower(pattern)}");
-        SolixLog.Debug($"CMD: {Convert.ToHexStringLower(cmd)}");
-        SolixLog.Debug($"Payload: {Convert.ToHexStringLower(payload)}");
-        SolixLog.Debug($"Payload length: {payload.Length}");
+        var composer = pattern[1];
+        var channel = pattern[2];
+        var command = PacketCommand.Parse(cmd);
+        SolixLog.Debug(
+            $"Pattern: {Convert.ToHexStringLower(pattern)} (composer {composer:x2}, channel {channel:x2})," +
+            $" CMD: {Convert.ToHexStringLower(cmd)} (msgtype {command.MsgType:x3}," +
+            $" fragmented {command.Fragmented}, encrypted {command.Encrypted})," +
+            $" payload length: {payload.Length}");
+
+        // Fragments are handed to the re-assembler which returns the payload
+        // once all fragments are available.
+        if (command.Fragmented)
+        {
+            var reassembled = Reassemble(pattern, cmd, payload);
+            if (reassembled is null)
+                return;
+            payload = reassembled;
+        }
+
+        // Negotiation messages (requests, replies and the grant the device
+        // pushes after its button is pressed) decrypt themselves.
+        if (channel == SolixConst.ChannelNegotiation)
+        {
+            SolixLog.Debug("Received negotiation message!");
+            await ProcessNegotiationAsync(pattern, cmd, payload).ConfigureAwait(false);
+            return;
+        }
+
+        if (channel is not (SolixConst.ChannelSession or SolixConst.ChannelApp))
+        {
+            SolixLog.Debug($"Unhandled channel {channel:x2} (composer {composer:x2}), cmd {Convert.ToHexStringLower(cmd)}");
+            return;
+        }
+
+        // Session messages are decrypted once, if the frame says so.
+        if (command.Encrypted)
+        {
+            var session = _session;
+            if (session is not { Keyed: true })
+            {
+                SolixLog.Debug($"Dropping encrypted session message {Convert.ToHexStringLower(cmd)} received before the session keys");
+                return;
+            }
+
+            payload = session.Decrypt(payload);
+            SolixLog.Debug($"Plain-text payload: {Convert.ToHexStringLower(payload)}");
+        }
 
         // If the packet has a future registered then we just trigger that
         // future instead of processing it here.
@@ -769,291 +865,84 @@ public class SolixBleDevice : IAsyncDisposable
             return;
         }
 
-        // Match against common message types.
-        switch (Convert.ToHexStringLower(pattern))
-        {
-            // Negotiation messages.
-            case "030001":
-            {
-                SolixLog.Debug("Received negotiation message!");
-                await ProcessNegotiationAsync(cmd, payload).ConfigureAwait(false);
-                return;
-            }
-
-            // Session messages.
-            case "03010f":
-            case "030111":
-            {
-                var cmdHex = Convert.ToHexStringLower(cmd);
-
-                // Non-encrypted telemetry messages.
-                if (cmdHex == "0300")
-                {
-                    SolixLog.Debug("Received non-encrypted telemetry message!");
-                    var parameters = ParsePayloadCore(payload);
-                    ProcessTelemetry(parameters);
-                    return;
-                }
-
-                // Encrypted telemetry messages.
-                if (TelemetryCommands.Contains(cmdHex))
-                {
-                    SolixLog.Debug("Received encrypted telemetry message!");
-                    ProcessTelemetryPacket(payload, cmd);
-                    return;
-                }
-
-                // Unknown messages.
-                SolixLog.Debug($"Received unknown message of type: {cmdHex}");
-                try
-                {
-                    var unknownPayload = payload;
-
-                    // If the payload is one byte too short for AES-CBC then try
-                    // putting the last byte of the cmd in front of it.
-                    if (unknownPayload.Length % 16 == 15)
-                    {
-                        SolixLog.Debug("Using special trick of embedded part of CMD in payload...");
-                        unknownPayload = new byte[payload.Length + 1];
-                        unknownPayload[0] = cmd[1];
-                        payload.CopyTo(unknownPayload, 1);
-                    }
-
-                    var decryptedPayload = DecryptPayload(unknownPayload);
-                    SolixLog.Debug($"Decrypted payload: {Convert.ToHexStringLower(decryptedPayload)}");
-                    var parameters = ParsePayloadCore(decryptedPayload);
-                    SolixLog.Debug($"Parameters: {ParametersToStr(parameters, types: true)}");
-                }
-                catch (Exception ex)
-                {
-                    SolixLog.Error($"Exception decrypting unknown message type: {ex}");
-                }
-
-                return;
-            }
-
-            default:
-            {
-                SolixLog.Warning(
-                    $"Unexpected packet type '{Convert.ToHexStringLower(pattern)}' sent by device!" +
-                    $" Packet: {Convert.ToHexStringLower(data)}");
-                return;
-            }
-        }
+        ProcessSession(command, cmd, payload);
     }
 
-    /// <summary>Send the negotiation initiation command.</summary>
-    private Task InitiateNegotiationsAsync(CancellationToken ct)
+    /// <summary>Process a plain-text session message from the device.</summary>
+    private void ProcessSession(PacketCommand command, byte[] cmd, byte[] payload)
+    {
+        // Telemetry messages, matched on the message type whatever the
+        // fragment and encryption flags (a clear 8405 is a c405).
+        _telemetryMsgTypes ??= TelemetryCommands.Select(c => PacketCommand.Parse(c).MsgType).ToHashSet();
+        if (command.MsgType == SolixConst.TelemetryMsgType || _telemetryMsgTypes.Contains(command.MsgType))
+        {
+            SolixLog.Debug(command.Encrypted
+                ? "Received encrypted telemetry message!"
+                : "Received non-encrypted telemetry message!");
+            var parameters = SolixFrame.ParseParameters(payload, out _);
+
+            // A session push the client could decrypt proves it is authorized.
+            if (command.Encrypted)
+                _session?.OnSessionPush();
+
+            ProcessTelemetry(parameters);
+            return;
+        }
+
+        // Unknown messages.
+        SolixLog.Debug(
+            $"Received unknown message of type: {Convert.ToHexStringLower(cmd)}," +
+            $" payload: {Convert.ToHexStringLower(payload)}");
+    }
+
+    /// <summary>Start a negotiation on the current outer protocol.</summary>
+    private Task InitiateNegotiationsAsync(NegotiationOuter outer)
+    {
+        _session = NewSession(outer);
+        return _session.OpenAsync(NegotiationInitWithResponse);
+    }
+
+    private NegotiatedSession NewSession(NegotiationOuter outer) => new(outer, WriteNegotiationPacketAsync, Name);
+
+    private Task WriteNegotiationPacketAsync(byte[] packet, bool withResponse)
     {
         var client = _client ?? throw new InvalidOperationException("Not connected to device");
-        return client.WriteCommandAsync(
-            Convert.FromHexString(SolixConst.NegotiationCommand0), NegotiationInitWithResponse, ct);
+        return client.WriteCommandAsync(packet, withResponse, CancellationToken.None);
     }
 
-    private Task WriteNegotiationCommandAsync(string hexCommand)
+    /// <summary>Hand a negotiation frame to the session negotiating with the device.</summary>
+    private async Task ProcessNegotiationAsync(byte[] pattern, byte[] cmd, byte[] payload)
     {
-        var client = _client ?? throw new InvalidOperationException("Not connected to device");
-        return client.WriteCommandAsync(Convert.FromHexString(hexCommand), withResponse: false, CancellationToken.None);
-    }
-
-    /// <summary>Negotiate encryption with the device, driven by received cmd codes.</summary>
-    private async Task ProcessNegotiationAsync(byte[] cmd, byte[] payload)
-    {
-        // There is a "stage 0" in which we automatically send a negotiation
-        // request as soon as we establish the initial connection. That should
-        // lead to the power station sending a response landing us in stage 1.
-        switch (Convert.ToHexStringLower(cmd))
+        var session = _session;
+        if (session is null)
         {
-            // Negotiation stage 1.
-            case "0801":
-            {
-                SolixLog.Debug("Entered negotiation stage 1 due to response from device!");
-                var parameters = ParsePayloadCore(payload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-                SolixLog.Debug("Sending stage 1 response message...");
-                await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand1).ConfigureAwait(false);
-                return;
-            }
-
-            // Negotiation stage 2.
-            case "0803":
-            {
-                SolixLog.Debug("Entered negotiation stage 2 due to response from device!");
-                var parameters = ParsePayloadCore(payload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-                SolixLog.Debug("Sending stage 2 response message...");
-                await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand2).ConfigureAwait(false);
-                return;
-            }
-
-            // Negotiation stage 3.
-            case "0829":
-            {
-                SolixLog.Debug("Entered negotiation stage 3 due to response from device!");
-                var parameters = ParsePayloadCore(payload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-                _negotiationTimestamp = DateTimeOffset.UtcNow;
-                SolixLog.Debug("Sending stage 3 response message...");
-                await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand3).ConfigureAwait(false);
-                return;
-            }
-
-            // Negotiation stage 4.
-            case "0805":
-            {
-                SolixLog.Debug("Entered negotiation stage 4 due to response from device!");
-                var parameters = ParsePayloadCore(payload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-                SolixLog.Debug("Sending stage 4 response message...");
-                await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand4).ConfigureAwait(false);
-                return;
-            }
-
-            // Negotiation stage 5.
-            case "0821":
-            {
-                SolixLog.Debug("Entered negotiation stage 5 due to response from device!");
-                var parameters = ParsePayloadCore(payload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-
-                // Extract public key of device from payload.
-                var deviceKeyBody = parameters["a1"];
-                var devicePublicKeyBytes = new byte[1 + deviceKeyBody.Length];
-                devicePublicKeyBytes[0] = 0x04;
-                deviceKeyBody.CopyTo(devicePublicKeyBytes, 1);
-                SolixLog.Debug($"Public key of device: {Convert.ToHexStringLower(devicePublicKeyBytes)}");
-
-                // Calculate the shared secret. The first half of the shared
-                // secret is the encryption key and the second half is the IV.
-                _sharedSecret = ComputeSharedSecret(devicePublicKeyBytes);
-                SolixLog.Debug($"Shared secret: {Convert.ToHexStringLower(_sharedSecret)}");
-
-                SolixLog.Debug("Sending stage 5 response message...");
-                await WriteNegotiationCommandAsync(SolixConst.NegotiationCommand5).ConfigureAwait(false);
-                return;
-            }
-
-            // Negotiation stage 6 (optional). Some devices (e.g. C300X)
-            // sometimes send an extra message after stage 5 but others
-            // (e.g. C1000) do not. No response is needed but it does not
-            // hurt to decrypt it anyway.
-            case "4822":
-            {
-                SolixLog.Debug("Entered negotiation stage 6 (optional) due to response from device!");
-                var decryptedPayload = DecryptPayload(payload);
-                var parameters = ParsePayloadCore(decryptedPayload);
-                SolixLog.Debug($"Parameters: {ParametersToStr(parameters)}");
-                return;
-            }
-
-            default:
-            {
-                SolixLog.Warning(
-                    $"Received unexpected negotiation request response from device!" +
-                    $" cmd: '{Convert.ToHexStringLower(cmd)}', payload: '{Convert.ToHexStringLower(payload)}'");
-                return;
-            }
+            SolixLog.Warning(
+                $"Received negotiation message from '{Name}' before negotiating!" +
+                $" cmd: '{Convert.ToHexStringLower(cmd)}', payload: '{Convert.ToHexStringLower(payload)}'");
+            return;
         }
-    }
 
-    /// <summary>ECDH P-256 key agreement returning the raw 32-byte shared secret (X coordinate).</summary>
-    private static byte[] ComputeSharedSecret(byte[] devicePublicKeyUncompressed)
-    {
-        using var privateKey = ECDiffieHellman.Create(new ECParameters
-        {
-            Curve = ECCurve.NamedCurves.nistP256,
-            D = Convert.FromHexString(SolixConst.PrivateKey),
-            Q = new ECPoint
-            {
-                X = Convert.FromHexString(SolixConst.ClientPublicQx),
-                Y = Convert.FromHexString(SolixConst.ClientPublicQy),
-            },
-        });
-
-        // devicePublicKeyUncompressed = 0x04 || X(32) || Y(32).
-        using var devicePublic = ECDiffieHellman.Create(new ECParameters
-        {
-            Curve = ECCurve.NamedCurves.nistP256,
-            Q = new ECPoint
-            {
-                X = devicePublicKeyUncompressed[1..33],
-                Y = devicePublicKeyUncompressed[33..65],
-            },
-        });
-        using var devicePublicKey = devicePublic.PublicKey;
-
-        return privateKey.DeriveRawSecretAgreement(devicePublicKey);
-    }
-
-    /// <summary>Calculate the checksum byte for a packet (XOR of all bytes).</summary>
-    private static byte Checksum(ReadOnlySpan<byte> packet)
-    {
-        byte checksumValue = 0;
-        foreach (var b in packet)
-            checksumValue ^= b;
-        return checksumValue;
+        await session.OnReplyAsync(pattern, cmd, payload).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Send a command to the device. Commands include a timestamp in the payload
-    /// to prevent replay attacks; that timestamp is agreed during negotiations.
+    /// Send a command to the device. Commands end with the current unix time
+    /// (fe 05 03 &lt;timestamp 4B&gt;) to prevent replay attacks.
     /// </summary>
     /// <param name="cmd">2 bytes containing the command type.</param>
     /// <param name="payload">Variable number of bytes containing arguments.</param>
     /// <exception cref="InvalidOperationException">If not connected/negotiated to device.</exception>
     protected async Task SendCommandAsync(byte[] cmd, byte[] payload)
     {
-        if (!Negotiated)
+        var session = _session;
+        if (!Negotiated || session is null)
             throw new InvalidOperationException("Not connected to device");
 
-        var negotiationTimestamp = _negotiationTimestamp
-            ?? throw new InvalidOperationException("Negotiation timestamp has not been set");
-
-        // Commands include a timestamp in the payload to prevent replay attacks
-        // and that timestamp is set during negotiations.
-        var timePassed = (uint)(DateTimeOffset.UtcNow - negotiationTimestamp).TotalSeconds;
-        var baseTimestamp = BinaryPrimitives.ReadUInt32LittleEndian(Convert.FromHexString(SolixConst.BaseTimestamp));
-
-        var newPayload = new byte[payload.Length + 7];
-        payload.CopyTo(newPayload, 0);
-        newPayload[payload.Length] = 0xFE;
-        newPayload[payload.Length + 1] = 0x05;
-        newPayload[payload.Length + 2] = 0x03;
-        BinaryPrimitives.WriteUInt32LittleEndian(
-            newPayload.AsSpan(payload.Length + 3), unchecked(baseTimestamp + timePassed));
-
-        await SendEncryptedPacketAsync(cmd, newPayload).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Build a packet to be sent to a device.
-    /// Packet format: &lt;HEADER 2B&gt; &lt;LENGTH 2B&gt; &lt;PATTERN 3B&gt; &lt;CMD 2B&gt; &lt;PAYLOAD nB&gt; &lt;CHECKSUM 1B&gt;.
-    /// </summary>
-    private static byte[] BuildPacket(byte[] pattern, byte[] cmd, byte[] payload)
-    {
-        // Calculate length of message (counts the whole packet).
-        var length = 2 + 2 + 3 + 2 + payload.Length + 1;
-
-        // Build packet.
-        var packet = new byte[length];
-        packet[0] = 0xFF;
-        packet[1] = 0x09;
-        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(2), (ushort)length);
-        pattern.CopyTo(packet, 4);
-        cmd.CopyTo(packet, 7);
-        payload.CopyTo(packet, 9);
-        packet[^1] = Checksum(packet.AsSpan(0, length - 1));
-        return packet;
-    }
-
-    /// <summary>Send an encrypted packet using the negotiated shared secret and IV.</summary>
-    private async Task SendEncryptedPacketAsync(byte[] cmd, byte[] payload)
-    {
+        byte[] newPayload = [.. payload, 0xFE, 0x05, 0x03, .. SolixFrame.Timestamp()];
         SolixLog.Debug(
-            $"Building packet with cmd: {Convert.ToHexStringLower(cmd)} and payload: {Convert.ToHexStringLower(payload)}");
-        var encryptedPayload = EncryptPayload(payload);
+            $"Building packet with cmd: {Convert.ToHexStringLower(cmd)} and payload: {Convert.ToHexStringLower(newPayload)}");
 
-        var packet = BuildPacket(Convert.FromHexString("03000f"), cmd, encryptedPayload);
+        var packet = SolixFrame.BuildPacket(SolixConst.CommandPattern, cmd, session.Encrypt(newPayload));
         SolixLog.Debug($"Sending encrypted packet: {Convert.ToHexStringLower(packet)}");
 
         // Send packet.
@@ -1089,11 +978,12 @@ public class SolixBleDevice : IAsyncDisposable
     }
 
     /// <summary>
-    /// Wait for a response and return its payload bytes. This blocks until a
-    /// matching packet is received or the timeout is reached (default 10 s),
-    /// returning null on timeout. Note that this overrides any built-in parsing
-    /// of the packet (i.e. if you listen for a regular telemetry packet that
-    /// packet will not be used to automatically populate device attributes).
+    /// Wait for a session message and return its reassembled, decrypted payload.
+    /// This blocks until a matching packet is received or the timeout is
+    /// reached (default 10 s), returning null on timeout. Note that this
+    /// overrides any built-in parsing of the packet (i.e. if you listen for a
+    /// regular telemetry packet that packet will not be used to automatically
+    /// populate device attributes).
     /// </summary>
     /// <param name="pattern">3-byte pattern (e.g. 03010f).</param>
     /// <param name="cmd">2-byte command (e.g. c402).</param>
@@ -1241,8 +1131,8 @@ public class SolixBleDevice : IAsyncDisposable
 
     /// <summary>
     /// Callback executed by the transport when the connection is lost. Clears
-    /// the negotiated values (which are now invalid) but not the cached data;
-    /// that is only cleared if the re-connection fails. Also triggers the
+    /// the session state (which is now invalid) but not the cached data; that
+    /// is only cleared if the re-connection fails. Also triggers the
     /// disconnection event so the automatic reconnection task attempts to reconnect.
     /// </summary>
     private void OnClientDisconnected(GattClient client)
@@ -1284,7 +1174,11 @@ public class SolixBleDevice : IAsyncDisposable
         }
     }
 
-    /// <summary>Reset negotiated variables and (optionally) data and futures.</summary>
+    /// <summary>
+    /// Reset per-connection variables and (optionally) data. The last
+    /// negotiation is kept so <see cref="ConnectAsync"/> can still tell after a
+    /// drop whether the device answered it; a new connection replaces it.
+    /// </summary>
     private void ResetSession(bool resetData = true)
     {
         if (resetData)
@@ -1293,11 +1187,8 @@ public class SolixBleDevice : IAsyncDisposable
             _lastDataTimestamp = null;
         }
 
-        _fragmentBuffers = new Dictionary<string, Dictionary<int, byte[]>>();
-        _fragmentTotals = new Dictionary<string, int>();
-        _sharedSecret = null;
+        _fragmentBuffers = new Dictionary<string, List<byte[]>>();
         _lastPacketTimestamp = null;
-        _negotiationTimestamp = null;
         lock (_futuresGate)
         {
             _packetFutures = new Dictionary<string, List<TaskCompletionSource<byte[]>>>();
