@@ -1,15 +1,22 @@
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Styling;
+using Avalonia.Themes.Fluent;
+using Avalonia.Threading;
 
 namespace Anchor;
 
 /// <summary>
-/// Tray UI: NotifyIcon with programmatically drawn battery icons, balloon tips
-/// on policy transitions, and the Status/Settings/Countdown windows. All
-/// monitor events are marshaled onto the UI thread via the captured
-/// SynchronizationContext.
+/// The application: a tray icon with programmatically drawn battery icons,
+/// notifications on policy transitions, and the Status/Settings/Countdown
+/// windows. There is no main window. All monitor and platform events are
+/// posted onto the UI thread.
 /// </summary>
-public sealed class TrayAppContext : ApplicationContext
+public sealed class TrayAppContext : Application
 {
     private enum IconKind
     {
@@ -21,106 +28,124 @@ public sealed class TrayAppContext : ApplicationContext
     }
 
     private readonly FileLog _log;
-    private readonly UpsMonitor _monitor;
-    private readonly SynchronizationContext _sync;
-    private readonly NotifyIcon _icon;
-    private readonly ToolStripMenuItem _cancelMenuItem;
-    private readonly ToolStripMenuItem _installUpdateItem;
-    private readonly ToolStripMenuItem _checkUpdatesItem;
-    private readonly Dictionary<(IconKind Kind, int Bucket), Icon> _iconCache = new();
+    private readonly Dictionary<(IconKind Kind, int Bucket), WindowIcon> _iconCache = new();
+    private readonly TrayClickFilter _clickFilter = new();
 
     private AppConfig _config;
-    private StatusForm? _statusForm;
-    private SettingsForm? _settingsForm;
-    private CountdownForm? _countdownForm;
+    private UpsMonitor _monitor = null!;
+    private TrayIcon _icon = null!;
+    private INotifier _notifier = null!;
+    private ISessionLockWatcher _lockWatcher = null!;
+    private DispatcherTimer _unlockReconcileTimer = null!;
+    private NativeMenuItem _cancelMenuItem = null!;
+    private NativeMenuItem _installUpdateItem = null!;
+    private NativeMenuItem _checkUpdatesItem = null!;
+    private PosixSignalRegistration? _sigterm;
+
+    private StatusWindow? _statusWindow;
+    private SettingsWindow? _settingsWindow;
+    private CountdownWindow? _countdownWindow;
     private string _lastTooltip = "";
     private (IconKind Kind, int Bucket)? _lastIconKey;
-    private bool _powerBalloonSeen;
+    private bool _powerNotificationSeen;
     private bool _sessionLocked;
+    private bool _lockChangeSeen;
     private bool? _lastNotifiedAvailable;
-    private readonly System.Windows.Forms.Timer _unlockReconcileTimer;
     private bool _exiting;
     private UpdateInfo? _availableUpdate;
     private bool _updateBusy;
-    private bool _updateBalloonActive;
 
-    public TrayAppContext(AppConfig config, FileLog log)
+    internal TrayAppContext(AppConfig config, FileLog log)
     {
         _log = log;
         _config = config;
-        _sync = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-
-        var menu = new ContextMenuStrip();
-        var statusItem = new ToolStripMenuItem("Status…", null, (_, _) => OpenStatus());
-        statusItem.Font = new Font(statusItem.Font, FontStyle.Bold);
-        _cancelMenuItem = new ToolStripMenuItem("Cancel shutdown", null, (_, _) => CancelShutdown())
-        {
-            Enabled = false,
-        };
-        _installUpdateItem = new ToolStripMenuItem("Update available…", null, OnInstallUpdate)
-        {
-            Visible = false,
-        };
-        _checkUpdatesItem = new ToolStripMenuItem("Check for updates…", null, OnCheckForUpdates);
-        menu.Items.Add(statusItem);
-        menu.Items.Add(new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings()));
-        menu.Items.Add(_cancelMenuItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(_installUpdateItem);
-        menu.Items.Add(_checkUpdatesItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("Exit", null, OnExit));
-
-        _icon = new NotifyIcon
-        {
-            Icon = GetIcon(IconKind.Unconfigured, -1),
-            Text = "Anchor",
-            ContextMenuStrip = menu,
-            Visible = true,
-        };
-        _icon.DoubleClick += (_, _) => OpenStatus();
-        _icon.BalloonTipClicked += OnBalloonClicked;
-
-        // Availability balloons are suppressed while the session is locked
-        // (boot straight to the lock screen, resume from sleep); after unlock
-        // one balloon is shown only if the state differs from what the user
-        // last saw. The timer gives BLE a beat to reconnect after unlock.
-        _sessionLocked = IsSessionLocked();
-        SystemEvents.SessionSwitch += OnSessionSwitch;
-        _unlockReconcileTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
-        _unlockReconcileTimer.Tick += OnUnlockReconcile;
-
-        _monitor = new UpsMonitor(config, log);
-        _monitor.StatusChanged += status => _sync.Post(_ => OnStatusUi(status), null);
-        _monitor.EffectOccurred += effect => _sync.Post(_ => OnEffectUi(effect), null);
-
-        FireAndForget(_monitor.ApplySettingsAsync(config), "Starting monitor");
-        FireAndForget(Task.Run(StartupUpdateCheckAsync), "Update check");
-
-        if (!config.Configured)
-        {
-            _sync.Post(_ =>
-            {
-                ShowBalloon(ToolTipIcon.Info, "Anchor is not configured",
-                    "Select your power station in Settings.");
-                OpenSettings();
-            }, null);
-        }
     }
 
-    protected override void Dispose(bool disposing)
+    public override void Initialize()
     {
-        if (disposing)
-        {
-            SystemEvents.SessionSwitch -= OnSessionSwitch;
-            _unlockReconcileTimer.Dispose();
-            _icon.Dispose();
-            foreach (var icon in _iconCache.Values)
-                icon.Dispose();
-            _iconCache.Clear();
-        }
+        Name = "Anchor";
+        RequestedThemeVariant = ThemeVariant.Default;
+        Styles.Add(new FluentTheme());
+    }
 
-        base.Dispose(disposing);
+    public override void OnFrameworkInitializationCompleted()
+    {
+        base.OnFrameworkInitializationCompleted();
+
+        var statusItem = new NativeMenuItem("Status…");
+        statusItem.Click += (_, _) => OpenStatus();
+        var settingsItem = new NativeMenuItem("Settings…");
+        settingsItem.Click += (_, _) => OpenSettings();
+        _cancelMenuItem = new NativeMenuItem("Cancel shutdown") { IsEnabled = false };
+        _cancelMenuItem.Click += (_, _) => CancelShutdown();
+        _installUpdateItem = new NativeMenuItem("Update available…") { IsVisible = false };
+        _installUpdateItem.Click += OnInstallUpdate;
+        _checkUpdatesItem = new NativeMenuItem("Check for updates…");
+        _checkUpdatesItem.Click += OnCheckForUpdates;
+        var exitItem = new NativeMenuItem("Exit");
+        exitItem.Click += OnExit;
+
+        var menu = new NativeMenu();
+        menu.Items.Add(statusItem);
+        menu.Items.Add(settingsItem);
+        menu.Items.Add(_cancelMenuItem);
+        menu.Items.Add(new NativeMenuItemSeparator());
+        menu.Items.Add(_installUpdateItem);
+        menu.Items.Add(_checkUpdatesItem);
+        menu.Items.Add(new NativeMenuItemSeparator());
+        menu.Items.Add(exitItem);
+
+        _icon = new TrayIcon
+        {
+            Icon = GetIcon(IconKind.Unconfigured, -1),
+            ToolTipText = "Anchor",
+            Menu = menu,
+            IsVisible = true,
+        };
+        _icon.Clicked += (_, _) =>
+        {
+            if (_clickFilter.IsActivation())
+                OpenStatus();
+        };
+        TrayIcon.SetIcons(this, [_icon]);
+
+        _notifier = new Notifier(_log);
+        _notifier.Clicked += click => Dispatcher.UIThread.Post(() => OnNotificationClicked(click));
+
+        // Availability notifications are suppressed while the session is locked
+        // (boot straight to the lock screen, resume from sleep); after unlock
+        // one notification is shown only if the state differs from what the
+        // user last saw. The timer gives BLE a beat to reconnect after unlock.
+        _unlockReconcileTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        _unlockReconcileTimer.Tick += OnUnlockReconcile;
+        _lockWatcher = new SessionLockWatcher(_log);
+        _lockWatcher.LockChanged += locked => Dispatcher.UIThread.Post(() => OnLockChanged(locked));
+        FireAndForget(ReadInitialLockStateAsync(), "Reading the lock-screen state");
+
+        _monitor = new UpsMonitor(_config, _log);
+        _monitor.StatusChanged += status => Dispatcher.UIThread.Post(() => OnStatusUi(status));
+        _monitor.EffectOccurred += effect => Dispatcher.UIThread.Post(() => OnEffectUi(effect));
+
+        // A Linux session ends its apps with SIGTERM; leave through Exit so the
+        // monitor closes the BLE link and the log records the exit.
+        _sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            Dispatcher.UIThread.Post(() => OnExit(this, EventArgs.Empty));
+        });
+
+        FireAndForget(_monitor.ApplySettingsAsync(_config), "Starting monitor");
+        FireAndForget(Task.Run(StartupUpdateCheckAsync), "Update check");
+
+        if (!_config.Configured)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                Notify(NotificationUrgency.Low, "Anchor is not configured",
+                    "Select your power station in Settings.");
+                OpenSettings();
+            });
+        }
     }
 
     private async void OnExit(object? sender, EventArgs e)
@@ -128,12 +153,16 @@ public sealed class TrayAppContext : ApplicationContext
         if (_exiting)
             return;
         _exiting = true;
-        _icon.Visible = false;
+        _icon.IsVisible = false;
 
         // Close any open child windows so their timers stop before teardown.
-        _statusForm?.Close();
-        _settingsForm?.Close();
-        CloseCountdownForm();
+        _statusWindow?.Close();
+        _settingsWindow?.Close();
+        CloseCountdownWindow();
+
+        _unlockReconcileTimer.Stop();
+        _lockWatcher.Dispose();
+        _notifier.Dispose();
 
         try
         {
@@ -146,7 +175,9 @@ public sealed class TrayAppContext : ApplicationContext
 
         _log.Info("Anchor exiting.");
         Environment.ExitCode = 0;
-        ExitThread();
+        _sigterm?.Dispose();
+        _icon.Dispose();
+        ((IClassicDesktopStyleApplicationLifetime)ApplicationLifetime!).Shutdown();
     }
 
     private void OnStatusUi(UpsStatus status)
@@ -156,7 +187,7 @@ public sealed class TrayAppContext : ApplicationContext
 
         UpdateIcon(status);
         UpdateTooltip(status);
-        _cancelMenuItem.Enabled = status.PolicyState == PolicyState.Pending;
+        _cancelMenuItem.IsEnabled = status.PolicyState == PolicyState.Pending;
 
         // Persist a newly learned device name so it shows even before a connect.
         if (status.Configured
@@ -168,12 +199,12 @@ public sealed class TrayAppContext : ApplicationContext
             _ = _config.Save(_log);
         }
 
-        _statusForm?.UpdateStatus(status);
+        _statusWindow?.UpdateStatus(status);
 
         if (status.PolicyState == PolicyState.Pending && status.ShutdownDeadline is { } deadline)
-            _countdownForm?.UpdateDeadline(deadline);
+            _countdownWindow?.UpdateDeadline(deadline);
         else
-            CloseCountdownForm();
+            CloseCountdownWindow();
     }
 
     private void OnEffectUi(PolicyEffect effect)
@@ -184,34 +215,35 @@ public sealed class TrayAppContext : ApplicationContext
         switch (effect)
         {
             case PolicyEffect.EnteredBattery:
-                _powerBalloonSeen = true;
-                ShowBalloon(ToolTipIcon.Warning, "Wall power lost",
+                _powerNotificationSeen = true;
+                Notify(NotificationUrgency.Normal, "Wall power lost",
                     "The power station is running on battery.");
                 break;
 
             case PolicyEffect.EnteredGrid:
-                // Suppress the balloon for the very first grid state after start;
-                // it is not a "restore", just the initial reading.
-                if (_powerBalloonSeen)
-                    ShowBalloon(ToolTipIcon.Info, "Wall power restored",
+                // Suppress the notification for the very first grid state after
+                // start; it is not a "restore", just the initial reading.
+                if (_powerNotificationSeen)
+                    Notify(NotificationUrgency.Low, "Wall power restored",
                         "The power station is back on grid power.");
-                _powerBalloonSeen = true;
+                _powerNotificationSeen = true;
                 break;
 
             case PolicyEffect.CountdownStarted:
-                ShowBalloon(ToolTipIcon.Warning, "Shutdown countdown started",
-                    $"Battery at or below {_config.BatteryFloorPercent}% on battery power.");
-                ShowCountdownForm();
+                Notify(NotificationUrgency.Critical, "Shutdown countdown started",
+                    $"Battery at or below {_config.BatteryFloorPercent}% on battery power.",
+                    NotificationKind.Countdown);
+                ShowCountdownWindow();
                 break;
 
             case PolicyEffect.CountdownCancelledAcRestored:
-                ShowBalloon(ToolTipIcon.Info, "Shutdown cancelled",
+                Notify(NotificationUrgency.Low, "Shutdown cancelled",
                     "AC power was restored during the countdown.");
                 break;
 
             case PolicyEffect.CountdownCancelledReconfigured:
-                CloseCountdownForm();
-                ShowBalloon(ToolTipIcon.Info, "Shutdown cancelled",
+                CloseCountdownWindow();
+                Notify(NotificationUrgency.Low, "Shutdown cancelled",
                     "The monitored device was reconfigured during the countdown.");
                 break;
 
@@ -220,9 +252,9 @@ public sealed class TrayAppContext : ApplicationContext
                 break;
 
             case PolicyEffect.ShutdownFailed:
-                ShowBalloon(ToolTipIcon.Error, "Shutdown failed",
-                    "Windows did not accept the shutdown request. Anchor will retry shortly.");
-                ShowCountdownForm();
+                Notify(NotificationUrgency.Critical, "Shutdown failed",
+                    "The system did not accept the shutdown request. Anchor will retry shortly.");
+                ShowCountdownWindow();
                 break;
 
             case PolicyEffect.BecameUnavailable:
@@ -231,15 +263,15 @@ public sealed class TrayAppContext : ApplicationContext
                 break;
 
             case PolicyEffect.BecameAvailable:
-                // Skip the balloon when the user was never told about a drop
-                // (it happened entirely behind the lock screen).
+                // Skip the notification when the user was never told about a
+                // drop (it happened entirely behind the lock screen).
                 if (!_sessionLocked && _lastNotifiedAvailable != true)
                     NotifyAvailability(true);
                 break;
 
             case PolicyEffect.FloorRaisedByDeviceLimit:
                 var floor = _monitor.GetSnapshot().EffectiveFloorPercent;
-                ShowBalloon(ToolTipIcon.Info, "Shutdown floor raised",
+                Notify(NotificationUrgency.Low, "Shutdown floor raised",
                     $"Shutdown floor raised to {floor}% to stay above the station's discharge cutoff.");
                 break;
         }
@@ -247,18 +279,18 @@ public sealed class TrayAppContext : ApplicationContext
 
     private void OnShutdownNow()
     {
-        CloseCountdownForm();
+        CloseCountdownWindow();
         if (_config.DryRun)
         {
-            _log.Info("[DRY RUN] Battery at floor on battery power; Windows shutdown would be initiated now.");
-            ShowBalloon(ToolTipIcon.Warning, "Dry run: shutdown suppressed",
-                "Windows shutdown would have been initiated now.");
+            _log.Info("[DRY RUN] Battery at floor on battery power; system shutdown would be initiated now.");
+            Notify(NotificationUrgency.Critical, "Dry run: shutdown suppressed",
+                "System shutdown would have been initiated now.");
             _monitor.CompleteShutdownAttempt(ShutdownAttemptResult.SuppressedDryRun);
             return;
         }
 
-        _log.Warning("Battery at floor on battery power; initiating Windows shutdown.");
-        ShowBalloon(ToolTipIcon.Error, "Shutting down", "Power station battery is at the configured floor.");
+        _log.Warning("Battery at floor on battery power; initiating system shutdown.");
+        Notify(NotificationUrgency.Critical, "Shutting down", "Power station battery is at the configured floor.");
         FireAndForget(ExecuteShutdownAsync(), "System shutdown");
     }
 
@@ -271,38 +303,42 @@ public sealed class TrayAppContext : ApplicationContext
 
     private void OpenStatus()
     {
-        if (_statusForm is { IsDisposed: false })
+        if (_exiting)
+            return;
+        if (_statusWindow is not null)
         {
-            _statusForm.Activate();
+            _statusWindow.Activate();
             return;
         }
 
-        var form = new StatusForm(_monitor.GetSnapshot());
-        form.FormClosed += (_, _) =>
+        var window = new StatusWindow(_monitor.GetSnapshot());
+        window.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_statusForm, form))
-                _statusForm = null;
+            if (ReferenceEquals(_statusWindow, window))
+                _statusWindow = null;
         };
-        _statusForm = form;
-        form.Show();
+        _statusWindow = window;
+        window.Show();
     }
 
     private void OpenSettings()
     {
-        if (_settingsForm is { IsDisposed: false })
+        if (_exiting)
+            return;
+        if (_settingsWindow is not null)
         {
-            _settingsForm.Activate();
+            _settingsWindow.Activate();
             return;
         }
 
-        var form = new SettingsForm(_config, _log, OnSettingsSaved);
-        form.FormClosed += (_, _) =>
+        var window = new SettingsWindow(_config, _log, OnSettingsSaved);
+        window.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_settingsForm, form))
-                _settingsForm = null;
+            if (ReferenceEquals(_settingsWindow, window))
+                _settingsWindow = null;
         };
-        _settingsForm = form;
-        form.Show();
+        _settingsWindow = window;
+        window.Show();
     }
 
     private void OnSettingsSaved(AppConfig config)
@@ -314,43 +350,43 @@ public sealed class TrayAppContext : ApplicationContext
     private void CancelShutdown()
     {
         _monitor.CancelCountdownByUser();
-        CloseCountdownForm();
+        CloseCountdownWindow();
     }
 
-    private void ShowCountdownForm()
+    private void ShowCountdownWindow()
     {
         var deadline = _monitor.GetSnapshot().ShutdownDeadline
                        ?? DateTimeOffset.Now.AddSeconds(_config.CountdownSeconds);
-        if (_countdownForm is { IsDisposed: false })
+        if (_countdownWindow is not null)
         {
-            _countdownForm.UpdateDeadline(deadline);
-            _countdownForm.Activate();
+            _countdownWindow.UpdateDeadline(deadline);
+            _countdownWindow.Activate();
             return;
         }
 
-        var form = new CountdownForm(deadline, () => _monitor.CancelCountdownByUser());
-        form.FormClosed += (_, _) =>
+        var window = new CountdownWindow(deadline, () => _monitor.CancelCountdownByUser());
+        window.Closed += (_, _) =>
         {
-            if (ReferenceEquals(_countdownForm, form))
-                _countdownForm = null;
+            if (ReferenceEquals(_countdownWindow, window))
+                _countdownWindow = null;
         };
-        _countdownForm = form;
-        form.Show();
-        form.Activate();
+        _countdownWindow = window;
+        window.Show();
+        window.Activate();
     }
 
-    private void CloseCountdownForm()
+    private void CloseCountdownWindow()
     {
-        if (_countdownForm is { IsDisposed: false } form)
+        if (_countdownWindow is { } window)
         {
-            _countdownForm = null;
-            form.Close();
+            _countdownWindow = null;
+            window.Close();
         }
     }
 
     /// <summary>
-    /// Background update check kicked off from the constructor; never throws.
-    /// Marshals back to the UI thread like the monitor events do.
+    /// Background update check started at launch; never throws. Marshals back
+    /// to the UI thread like the monitor events do.
     /// </summary>
     private async Task StartupUpdateCheckAsync()
     {
@@ -358,7 +394,7 @@ public sealed class TrayAppContext : ApplicationContext
         {
             var info = await Updater.CheckAsync(_log).ConfigureAwait(false);
             if (info is { IsNewer: true })
-                _sync.Post(_ => OnUpdateAvailableUi(info), null);
+                Dispatcher.UIThread.Post(() => OnUpdateAvailableUi(info));
         }
         catch (Exception ex)
         {
@@ -372,17 +408,32 @@ public sealed class TrayAppContext : ApplicationContext
             return;
 
         _availableUpdate = info;
-        _installUpdateItem.Text = $"Update available: install {info.Latest}…";
-        _installUpdateItem.Visible = true;
-        ShowBalloon(ToolTipIcon.Info, "Update available",
-            $"Anchor {info.Latest} is available. Click here or use the tray menu to update.");
-        _updateBalloonActive = true;
+        _installUpdateItem.Header = $"Update available: install {info.Latest}…";
+        _installUpdateItem.IsVisible = true;
+        Notify(NotificationUrgency.Low, "Update available",
+            $"Anchor {info.Latest} is available. Click here or use the tray menu to update.",
+            NotificationKind.Update);
     }
 
-    private void OnBalloonClicked(object? sender, EventArgs e)
+    private void OnNotificationClicked(NotificationClick click)
     {
-        if (_updateBalloonActive)
-            FireAndForget(InstallUpdateAsync(), "Installing update");
+        if (_exiting)
+            return;
+
+        switch (click)
+        {
+            case NotificationClick.InstallUpdate:
+                FireAndForget(InstallUpdateAsync(), "Installing update");
+                break;
+
+            case NotificationClick.CancelShutdown:
+                CancelShutdown();
+                break;
+
+            default:
+                OpenStatus();
+                break;
+        }
     }
 
     private async void OnInstallUpdate(object? sender, EventArgs e)
@@ -403,7 +454,7 @@ public sealed class TrayAppContext : ApplicationContext
             return;
 
         _updateBusy = true;
-        _installUpdateItem.Enabled = false;
+        _installUpdateItem.IsEnabled = false;
         try
         {
             var launched = await Updater.DownloadAndLaunchInstallerAsync(info, _log);
@@ -416,13 +467,13 @@ public sealed class TrayAppContext : ApplicationContext
             }
 
             if (info.DownloadUrl.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                ShowBalloon(ToolTipIcon.Warning, "Update failed",
+                Notify(NotificationUrgency.Normal, "Update failed",
                     "Could not download or launch the installer. See the log for details.");
         }
         finally
         {
             _updateBusy = false;
-            _installUpdateItem.Enabled = true;
+            _installUpdateItem.IsEnabled = true;
         }
     }
 
@@ -431,7 +482,7 @@ public sealed class TrayAppContext : ApplicationContext
         if (_updateBusy)
             return;
 
-        _checkUpdatesItem.Enabled = false;
+        _checkUpdatesItem.IsEnabled = false;
         try
         {
             var info = await Updater.CheckAsync(_log);
@@ -439,12 +490,12 @@ public sealed class TrayAppContext : ApplicationContext
                 return;
 
             if (info is null)
-                ShowBalloon(ToolTipIcon.Warning, "Update check failed",
+                Notify(NotificationUrgency.Normal, "Update check failed",
                     "Could not reach GitHub to check for updates. See the log for details.");
             else if (info.IsNewer)
                 OnUpdateAvailableUi(info);
             else
-                ShowBalloon(ToolTipIcon.Info, "Up to date",
+                Notify(NotificationUrgency.Low, "Up to date",
                     $"Anchor {info.Current.ToString(3)} is the latest version.");
         }
         catch (Exception ex)
@@ -453,7 +504,7 @@ public sealed class TrayAppContext : ApplicationContext
         }
         finally
         {
-            _checkUpdatesItem.Enabled = true;
+            _checkUpdatesItem.IsEnabled = true;
         }
     }
 
@@ -461,28 +512,35 @@ public sealed class TrayAppContext : ApplicationContext
     {
         _lastNotifiedAvailable = available;
         if (available)
-            ShowBalloon(ToolTipIcon.Info, "Device connected",
+            Notify(NotificationUrgency.Low, "Device connected",
                 "Receiving data from the power station.");
         else
-            ShowBalloon(ToolTipIcon.Warning, "Device unavailable",
+            Notify(NotificationUrgency.Normal, "Device unavailable",
                 "No fresh data from the power station.");
     }
 
-    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    /// <summary>
+    /// Covers the boot-straight-to-lock-screen case, which happens before any
+    /// lock change this process could observe. A change seen while the query
+    /// was running is newer, so it wins.
+    /// </summary>
+    private async Task ReadInitialLockStateAsync()
     {
-        switch (e.Reason)
-        {
-            case SessionSwitchReason.SessionLock:
-                _sessionLocked = true;
-                _unlockReconcileTimer.Stop();
-                break;
+        var locked = await _lockWatcher.IsLockedAsync();
+        if (!_lockChangeSeen)
+            _sessionLocked = locked;
+    }
 
-            case SessionSwitchReason.SessionUnlock:
-                _sessionLocked = false;
-                _unlockReconcileTimer.Stop();
-                _unlockReconcileTimer.Start();
-                break;
-        }
+    private void OnLockChanged(bool locked)
+    {
+        if (_exiting)
+            return;
+        _lockChangeSeen = true;
+
+        _sessionLocked = locked;
+        _unlockReconcileTimer.Stop();
+        if (!locked)
+            _unlockReconcileTimer.Start();
     }
 
     private void OnUnlockReconcile(object? sender, EventArgs e)
@@ -496,11 +554,9 @@ public sealed class TrayAppContext : ApplicationContext
             NotifyAvailability(available);
     }
 
-    private void ShowBalloon(ToolTipIcon icon, string title, string text)
-    {
-        _updateBalloonActive = false;
-        _icon.ShowBalloonTip(5000, title, text, icon);
-    }
+    private void Notify(NotificationUrgency urgency, string title, string text,
+        NotificationKind kind = NotificationKind.Status) =>
+        _notifier.Show(kind, urgency, title, text);
 
     private void UpdateIcon(UpsStatus status)
     {
@@ -533,7 +589,7 @@ public sealed class TrayAppContext : ApplicationContext
         if (text == _lastTooltip)
             return;
         _lastTooltip = text;
-        _icon.Text = text;
+        _icon.ToolTipText = text;
     }
 
     private static string BuildTooltip(UpsStatus status)
@@ -569,68 +625,58 @@ public sealed class TrayAppContext : ApplicationContext
 
     private static int BatteryBucket(int percent) => percent < 0 ? -1 : Math.Clamp(percent, 0, 100) / 10;
 
-    /// <summary>
-    /// Get (or lazily draw and cache) a 16x16 battery icon. Icons are created
-    /// via GetHicon + Icon.FromHandle + Clone, and the original handle is
-    /// released with DestroyIcon to avoid GDI handle leaks.
-    /// </summary>
-    private Icon GetIcon(IconKind kind, int percent)
+    /// <summary>Get (or lazily draw and cache) the battery icon for a state and 10% bucket.</summary>
+    private WindowIcon GetIcon(IconKind kind, int percent)
     {
         var bucket = BatteryBucket(percent);
         var key = (kind, bucket);
         if (_iconCache.TryGetValue(key, out var cached))
             return cached;
 
+        // WindowIcon copies the pixels, so the bitmap can go right away.
         using var bitmap = DrawBatteryBitmap(GetFillColor(kind), bucket < 0 ? -1 : bucket * 10);
-        var handle = bitmap.GetHicon();
-        Icon icon;
-        try
-        {
-            using var fromHandle = Icon.FromHandle(handle);
-            icon = (Icon)fromHandle.Clone();
-        }
-        finally
-        {
-            DestroyIcon(handle);
-        }
-
+        var icon = new WindowIcon(bitmap);
         _iconCache[key] = icon;
         return icon;
     }
 
     private static Color GetFillColor(IconKind kind) => kind switch
     {
-        IconKind.OnGrid => Color.FromArgb(76, 175, 80),      // Green.
-        IconKind.OnBattery => Color.FromArgb(255, 152, 0),   // Orange.
-        IconKind.Pending => Color.FromArgb(229, 57, 53),     // Red.
-        IconKind.Unavailable => Color.FromArgb(128, 128, 128), // Gray.
-        _ => Color.FromArgb(100, 116, 139),                  // Slate (unconfigured).
+        IconKind.OnGrid => Color.FromRgb(76, 175, 80),      // Green.
+        IconKind.OnBattery => Color.FromRgb(255, 152, 0),   // Orange.
+        IconKind.Pending => Color.FromRgb(229, 57, 53),     // Red.
+        IconKind.Unavailable => Color.FromRgb(128, 128, 128), // Gray.
+        _ => Color.FromRgb(100, 116, 139),                  // Slate (unconfigured).
     };
 
-    private static Bitmap DrawBatteryBitmap(Color fill, int percent)
+    /// <summary>
+    /// Draw the 16x16 battery on a 16-pixel grid at twice the size, so trays
+    /// that show icons larger than 16 px (KDE, high DPI) still get sharp edges.
+    /// </summary>
+    private static RenderTargetBitmap DrawBatteryBitmap(Color fill, int percent)
     {
-        var bitmap = new Bitmap(16, 16);
-        using var graphics = Graphics.FromImage(bitmap);
-        graphics.Clear(Color.Transparent);
+        const int scale = 2;
+        var bitmap = new RenderTargetBitmap(new PixelSize(16 * scale, 16 * scale));
+        using var context = bitmap.CreateDrawingContext(true);
 
-        var outlineColor = Color.FromArgb(235, 235, 235);
-        using var outlinePen = new Pen(outlineColor);
-        using var outlineBrush = new SolidBrush(outlineColor);
+        void FillCells(IBrush brush, int x, int y, int width, int height) =>
+            context.FillRectangle(brush, new Rect(x * scale, y * scale, width * scale, height * scale));
 
-        // Battery body outline plus the terminal nub on the right.
-        graphics.DrawRectangle(outlinePen, 0, 4, 12, 8);
-        graphics.FillRectangle(outlineBrush, 13, 6, 2, 4);
+        // Battery body outline (13 x 9 cells, one cell thick) plus the terminal nub on the right.
+        var outline = new SolidColorBrush(Color.FromRgb(235, 235, 235));
+        FillCells(outline, 0, 4, 13, 1);
+        FillCells(outline, 0, 12, 13, 1);
+        FillCells(outline, 0, 4, 1, 9);
+        FillCells(outline, 12, 4, 1, 9);
+        FillCells(outline, 13, 6, 2, 4);
 
-        // Fill level inside the body (interior is 11 x 7 px). Unknown level (-1)
+        // Fill level inside the body (interior is 11 x 7 cells). Unknown level (-1)
         // renders as a full bar in the state colour.
         var level = percent < 0 ? 11 : (int)Math.Round(Math.Clamp(percent, 0, 100) / 100.0 * 11);
         if (percent > 0 && level == 0)
             level = 1;
         if (level > 0)
-        {
-            using var fillBrush = new SolidBrush(fill);
-            graphics.FillRectangle(fillBrush, 1, 5, level, 7);
-        }
+            FillCells(new SolidColorBrush(fill), 1, 5, level, 7);
 
         return bitmap;
     }
@@ -639,28 +685,4 @@ public sealed class TrayAppContext : ApplicationContext
         task.ContinueWith(
             t => _log.Error($"{operation} failed: {t.Exception?.GetBaseException()}"),
             TaskContinuationOptions.OnlyOnFaulted);
-
-    /// <summary>
-    /// True when the interactive session is on the secure desktop (lock screen).
-    /// Covers the boot-straight-to-lock-screen case, which happens before any
-    /// SessionSwitch event this process could observe.
-    /// </summary>
-    private static bool IsSessionLocked()
-    {
-        const uint desktopSwitchDesktop = 0x0100;
-        var desktop = OpenInputDesktop(0, false, desktopSwitchDesktop);
-        if (desktop == IntPtr.Zero)
-            return true;
-        CloseDesktop(desktop);
-        return false;
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool DestroyIcon(IntPtr handle);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
-
-    [DllImport("user32.dll")]
-    private static extern bool CloseDesktop(IntPtr desktop);
 }

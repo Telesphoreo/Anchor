@@ -1,7 +1,8 @@
 namespace Anchor;
 
 /// <summary>
-/// Thread-safe append-only file log at %APPDATA%\Anchor\logs\anchor.log.
+/// Thread-safe append-only file log at %APPDATA%\Anchor\logs\anchor.log
+/// (~/.config/Anchor/logs/anchor.log on Linux).
 /// Rotates to a single .old file when the log exceeds 5 MB. Logging failures
 /// are swallowed so they can never take the application down.
 /// </summary>

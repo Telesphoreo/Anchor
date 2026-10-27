@@ -1,3 +1,6 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Threading;
 using SolixBle;
 
 namespace Anchor;
@@ -30,22 +33,28 @@ internal static class Program
 
         // First run (fresh install, no saved config yet): register autostart so
         // Anchor comes back after a reboot. The installer never writes this (the
-        // app owns the per-user Run key), so an admin install touches no user area.
+        // app owns the per-user entry), so an admin install touches no user area.
         var firstRun = !AppConfig.Exists;
         var config = AppConfig.Load(log);
         if (firstRun && !StartupRegistration.IsEnabled())
         {
             StartupRegistration.SetEnabled(true, log);
-            log.Info("First run: registered Anchor to start with Windows (toggle in Settings).");
+            log.Info("First run: registered Anchor to start at login (toggle in Settings).");
         }
 
-        ApplicationConfiguration.Initialize();
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => log.Error($"Unhandled UI exception: {e.Exception}");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => log.Error($"Unhandled exception: {e.ExceptionObject}");
-        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
 
-        using var context = new TrayAppContext(config, log);
-        Application.Run(context);
+        AppBuilder.Configure(() => new TrayAppContext(config, log))
+            .UsePlatformDetect()
+            .AfterSetup(_ =>
+            {
+                // Log and keep running, as a tray app that guards a shutdown must.
+                Dispatcher.UIThread.UnhandledException += (_, e) =>
+                {
+                    log.Error($"Unhandled UI exception: {e.Exception}");
+                    e.Handled = true;
+                };
+            })
+            .StartWithClassicDesktopLifetime(args, ShutdownMode.OnExplicitShutdown);
     }
 }

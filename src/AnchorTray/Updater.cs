@@ -12,13 +12,13 @@ public sealed record UpdateInfo(Version Latest, Version Current, string Download
 
 /// <summary>
 /// Checks the GitHub releases API for a newer version and downloads/launches
-/// the installer. All failures are logged and surfaced as null/false; nothing
-/// here throws to callers.
+/// the installer. Only Windows releases carry an installer asset; elsewhere
+/// installing opens the release page. All failures are logged and surfaced as
+/// null/false; nothing here throws to callers.
 /// </summary>
 public static class Updater
 {
     private const string LatestReleaseUrl = "https://api.github.com/repos/Telesphoreo/Anchor/releases/latest";
-    private const string InstallerSuffix = "-setup.exe";
 
     private static readonly HttpClient Http = CreateClient();
 
@@ -105,7 +105,7 @@ public static class Updater
             Directory.CreateDirectory(directory);
             var fileName = Path.GetFileName(new Uri(info.DownloadUrl).LocalPath);
             if (fileName.Length == 0)
-                fileName = $"Anchor-{info.Latest}{InstallerSuffix}";
+                fileName = $"Anchor-{info.Latest}{PlatformInfo.InstallerAssetSuffix}";
             var filePath = Path.Combine(directory, fileName);
 
             log.Info($"Downloading installer {info.DownloadUrl} to {filePath}.");
@@ -131,13 +131,14 @@ public static class Updater
 
     private static string? FindInstallerUrl(JsonElement root)
     {
-        if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+        if (PlatformInfo.InstallerAssetSuffix is not { } suffix
+            || !root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
             return null;
 
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
-            if (name is null || !name.EndsWith(InstallerSuffix, StringComparison.OrdinalIgnoreCase))
+            if (name is null || !name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
                 continue;
             if (asset.TryGetProperty("browser_download_url", out var urlElement) &&
                 urlElement.GetString() is { Length: > 0 } url)

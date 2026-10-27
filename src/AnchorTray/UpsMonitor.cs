@@ -141,7 +141,7 @@ public sealed class UpsMonitor : IAsyncDisposable
     }
 
     /// <summary>
-    /// Report whether Windows accepted a shutdown request, or that the request
+    /// Report whether the OS accepted a shutdown request, or that the request
     /// was intentionally suppressed by dry-run mode. Failed requests are put
     /// back into a retryable pending state by the policy.
     /// </summary>

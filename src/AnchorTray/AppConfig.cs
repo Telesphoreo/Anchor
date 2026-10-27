@@ -5,7 +5,8 @@ using SolixBle;
 namespace Anchor;
 
 /// <summary>
-/// Application configuration persisted as JSON at %APPDATA%\Anchor\config.json.
+/// Application configuration persisted as JSON at %APPDATA%\Anchor\config.json
+/// (~/.config/Anchor/config.json on Linux).
 /// Loads defaults when the file is missing or corrupt; saves atomically.
 /// </summary>
 public sealed class AppConfig
@@ -33,16 +34,21 @@ public sealed class AppConfig
     /// <summary>Length of the shutdown countdown in seconds.</summary>
     public int CountdownSeconds { get; set; } = 60;
 
-    /// <summary>When true, log and notify instead of actually shutting Windows down.</summary>
+    /// <summary>When true, log and notify instead of actually shutting the computer down.</summary>
     public bool DryRun { get; set; }
 
     /// <summary>True when a device MAC has been configured.</summary>
     [JsonIgnore]
     public bool Configured => !string.IsNullOrWhiteSpace(DeviceMac);
 
-    /// <summary>Directory holding the config file and logs.</summary>
+    /// <summary>
+    /// Directory holding the config file and logs. DoNotVerify because on Linux
+    /// GetFolderPath returns "" while ~/.config does not exist yet.
+    /// </summary>
     public static string ConfigDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Anchor");
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.DoNotVerify),
+            "Anchor");
 
     private static string ConfigPath => Path.Combine(ConfigDirectory, "config.json");
 

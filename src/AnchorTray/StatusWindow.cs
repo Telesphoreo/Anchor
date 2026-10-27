@@ -1,3 +1,8 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Media;
+using Avalonia.Threading;
+
 namespace Anchor;
 
 /// <summary>
@@ -5,77 +10,75 @@ namespace Anchor;
 /// tray context and by a 1 s UI timer (for relative timestamps and the
 /// countdown display).
 /// </summary>
-public sealed class StatusForm : Form
+public sealed class StatusWindow : Window
 {
-    private readonly System.Windows.Forms.Timer _refreshTimer;
+    private readonly DispatcherTimer _refreshTimer;
+    private readonly Grid _table;
 
-    private readonly Label _model;
-    private readonly Label _name;
-    private readonly Label _mac;
-    private readonly Label _connection;
-    private readonly Label _battery;
-    private readonly Label _acIn;
-    private readonly Label _acOut;
-    private readonly Label _powerOut;
-    private readonly Label _temperature;
-    private readonly Label _chargeLimitCaption;
-    private readonly Label _chargeLimit;
-    private readonly Label _dischargeCutoffCaption;
-    private readonly Label _dischargeCutoff;
-    private readonly Label _serial;
-    private readonly Label _lastUpdate;
-    private readonly Label _floor;
-    private readonly Label _policyState;
-    private readonly Label _countdown;
+    private readonly TextBlock _model;
+    private readonly TextBlock _name;
+    private readonly TextBlock _mac;
+    private readonly TextBlock _connection;
+    private readonly TextBlock _battery;
+    private readonly TextBlock _acIn;
+    private readonly TextBlock _acOut;
+    private readonly TextBlock _powerOut;
+    private readonly TextBlock _temperature;
+    private readonly TextBlock _chargeLimitCaption;
+    private readonly TextBlock _chargeLimit;
+    private readonly TextBlock _dischargeCutoffCaption;
+    private readonly TextBlock _dischargeCutoff;
+    private readonly TextBlock _serial;
+    private readonly TextBlock _lastUpdate;
+    private readonly TextBlock _floor;
+    private readonly TextBlock _policyState;
+    private readonly TextBlock _countdown;
 
     private UpsStatus _status;
 
-    public StatusForm(UpsStatus initial)
+    public StatusWindow(UpsStatus initial)
     {
         _status = initial;
 
-        Text = "Anchor Status";
-        AutoScaleMode = AutoScaleMode.Font;
-        AutoScaleDimensions = new SizeF(7F, 15F);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
-        AutoSize = true;
-        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        Title = "Anchor Status";
+        SizeToContent = SizeToContent.WidthAndHeight;
+        CanResize = false;
+        CanMinimize = false;
+        CanMaximize = false;
+        WindowStartupLocation = WindowStartupLocation.CenterScreen;
 
-        var table = new TableLayoutPanel
+        _table = new Grid
         {
-            ColumnCount = 2,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(20),
+            ColumnDefinitions = new ColumnDefinitions("Auto,Auto"),
+            Margin = new Thickness(20),
         };
 
-        _model = AddRow(table, "Model").Value;
-        _name = AddRow(table, "Name").Value;
-        _mac = AddRow(table, "MAC").Value;
-        _connection = AddRow(table, "Connection").Value;
-        _battery = AddRow(table, "Battery").Value;
-        _acIn = AddRow(table, "AC input").Value;
-        _acOut = AddRow(table, "AC output").Value;
-        _powerOut = AddRow(table, "Total output").Value;
-        _temperature = AddRow(table, "Temperature").Value;
-        (_chargeLimitCaption, _chargeLimit) = AddRow(table, "Charge limit");
-        (_dischargeCutoffCaption, _dischargeCutoff) = AddRow(table, "Discharge cutoff");
-        _serial = AddRow(table, "Serial").Value;
-        _lastUpdate = AddRow(table, "Last update").Value;
-        _floor = AddRow(table, "Shutdown floor").Value;
-        // The raised-floor explanation can get long: wrap instead of widening the form.
-        _floor.MaximumSize = new Size(320, 0);
-        _policyState = AddRow(table, "Policy state").Value;
-        _countdown = AddRow(table, "Countdown").Value;
+        _model = AddRow("Model").Value;
+        _name = AddRow("Name").Value;
+        _mac = AddRow("MAC").Value;
+        _connection = AddRow("Connection").Value;
+        _battery = AddRow("Battery").Value;
+        _acIn = AddRow("AC input").Value;
+        _acOut = AddRow("AC output").Value;
+        _powerOut = AddRow("Total output").Value;
+        _temperature = AddRow("Temperature").Value;
+        (_chargeLimitCaption, _chargeLimit) = AddRow("Charge limit");
+        (_dischargeCutoffCaption, _dischargeCutoff) = AddRow("Discharge cutoff");
+        _serial = AddRow("Serial").Value;
+        _lastUpdate = AddRow("Last update").Value;
+        _floor = AddRow("Shutdown floor").Value;
+        // The raised-floor explanation can get long: wrap instead of widening the window.
+        _floor.MaxWidth = 320;
+        _floor.TextWrapping = TextWrapping.Wrap;
+        _policyState = AddRow("Policy state").Value;
+        _countdown = AddRow("Countdown").Value;
 
-        Controls.Add(table);
+        Content = _table;
 
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _refreshTimer.Tick += (_, _) => RefreshLabels();
         _refreshTimer.Start();
+        Closed += (_, _) => _refreshTimer.Stop();
         RefreshLabels();
     }
 
@@ -86,31 +89,28 @@ public sealed class StatusForm : Form
         RefreshLabels();
     }
 
-    protected override void Dispose(bool disposing)
+    private (TextBlock Caption, TextBlock Value) AddRow(string caption)
     {
-        if (disposing)
-            _refreshTimer.Dispose();
-        base.Dispose(disposing);
-    }
+        var row = _table.RowDefinitions.Count;
+        _table.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
 
-    private static (Label Caption, Label Value) AddRow(TableLayoutPanel table, string caption)
-    {
-        var captionLabel = new Label
+        var captionText = new TextBlock
         {
             Text = caption + ":",
-            AutoSize = true,
-            ForeColor = SystemColors.GrayText,
-            Margin = new Padding(0, 4, 20, 4),
+            Opacity = 0.65,
+            Margin = new Thickness(0, 4, 20, 4),
         };
-        var valueLabel = new Label
+        var valueText = new TextBlock
         {
             Text = "n/a",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 0, 4),
+            Margin = new Thickness(0, 4, 0, 4),
         };
-        table.Controls.Add(captionLabel);
-        table.Controls.Add(valueLabel);
-        return (captionLabel, valueLabel);
+        Grid.SetRow(captionText, row);
+        Grid.SetRow(valueText, row);
+        Grid.SetColumn(valueText, 1);
+        _table.Children.Add(captionText);
+        _table.Children.Add(valueText);
+        return (captionText, valueText);
     }
 
     private void RefreshLabels()
@@ -137,13 +137,13 @@ public sealed class StatusForm : Form
     }
 
     /// <summary>Show a limit row only when the station actually reported the value.</summary>
-    private static void SetLimitRow(Label caption, Label value, int percent)
+    private static void SetLimitRow(TextBlock caption, TextBlock value, int percent)
     {
         var reported = percent != -1;
         if (reported)
             value.Text = percent + "%";
-        caption.Visible = reported;
-        value.Visible = reported;
+        caption.IsVisible = reported;
+        value.IsVisible = reported;
     }
 
     private static string FloorText(UpsStatus status) =>

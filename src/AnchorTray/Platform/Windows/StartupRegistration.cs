@@ -26,13 +26,13 @@ internal static class StartupRegistration
         {
             using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
             if (enabled)
-                key.SetValue(RunValueName, $"\"{Application.ExecutablePath}\"");
+                key.SetValue(RunValueName, $"\"{Environment.ProcessPath}\"");
             else
                 key.DeleteValue(RunValueName, throwOnMissingValue: false);
         }
         catch (Exception ex)
         {
-            log?.Error($"Failed to update the 'start with Windows' registry value: {ex.Message}");
+            log?.Error($"Failed to update the 'start at login' registry value: {ex.Message}");
         }
     }
 }

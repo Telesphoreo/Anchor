@@ -44,10 +44,10 @@ public enum PolicyEffect
 /// <summary>Outcome of attempting the irreversible shutdown side effect.</summary>
 public enum ShutdownAttemptResult
 {
-    /// <summary>Windows accepted the shutdown request.</summary>
+    /// <summary>The OS accepted the shutdown request.</summary>
     Accepted,
 
-    /// <summary>Windows rejected the shutdown request.</summary>
+    /// <summary>The OS rejected the shutdown request.</summary>
     Failed,
 
     /// <summary>The request was deliberately skipped because dry-run mode is enabled.</summary>
@@ -200,7 +200,7 @@ public sealed class PolicyEngine
 
     /// <summary>
     /// Feed the result of a requested shutdown back into the policy. A real
-    /// shutdown accepted by Windows remains terminal. A failed request becomes
+    /// shutdown accepted by the OS remains terminal. A failed request becomes
     /// pending again and is retried after a short delay, while a dry run returns
     /// to a disarmed on-battery state until AC is observed again.
     /// </summary>
