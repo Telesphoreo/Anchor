@@ -2,12 +2,29 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <TargetFrameworks>net10.0-windows10.0.19041.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>SolixConsole</RootNamespace>
+    <IsWindowsTarget Condition="'$([MSBuild]::GetTargetPlatformIdentifier($(TargetFramework)))' == 'windows'">true</IsWindowsTarget>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsWindowsTarget)' == 'true'">
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <!-- Runs without the distro's ICU package; the output is English-only. -->
+  <PropertyGroup Condition="'$(IsWindowsTarget)' != 'true'">
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsWindowsTarget)' != 'true'">
+    <Compile Remove="Platform\Windows\**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsWindowsTarget)' == 'true'">
+    <Compile Remove="Platform\Linux\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SolixBle\SolixBle.csproj" />

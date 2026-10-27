@@ -9,7 +9,7 @@ namespace SolixBle;
 /// address, locates the Solix telemetry/command characteristics and subscribes
 /// to telemetry notifications.
 /// </summary>
-internal sealed class GattClient : IAsyncDisposable
+internal sealed class WinRtGattLink : IGattLink
 {
     private readonly ulong _bluetoothAddress;
     private readonly bool _maintainConnection;
@@ -20,7 +20,7 @@ internal sealed class GattClient : IAsyncDisposable
     private GattCharacteristic? _commandCharacteristic;
     private bool _disposed;
 
-    public GattClient(ulong bluetoothAddress, bool maintainConnection = true)
+    public WinRtGattLink(ulong bluetoothAddress, bool maintainConnection = true)
     {
         _bluetoothAddress = bluetoothAddress;
         _maintainConnection = maintainConnection;
@@ -36,11 +36,14 @@ internal sealed class GattClient : IAsyncDisposable
     /// <summary>The OS-known name of the resolved device, or null before resolution.</summary>
     public string? DeviceName => _device?.Name;
 
+    /// <summary>The GattSession's MaxPduSize, or 0 without a session.</summary>
+    public int Mtu => _gattSession?.MaxPduSize ?? 0;
+
     /// <summary>Raised with a copy of the bytes of every telemetry characteristic notification.</summary>
-    public event Action<GattClient, byte[]>? NotificationReceived;
+    public event Action<IGattLink, byte[]>? NotificationReceived;
 
     /// <summary>Raised when the BLE connection is lost.</summary>
-    public event Action<GattClient>? Disconnected;
+    public event Action<IGattLink>? Disconnected;
 
     /// <summary>Resolve the device, find the Solix characteristics and subscribe to notifications.</summary>
     public async Task ConnectAsync(CancellationToken ct)

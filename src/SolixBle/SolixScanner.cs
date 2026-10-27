@@ -1,8 +1,4 @@
 using System.Globalization;
-using Windows.Devices.Bluetooth;
-using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Devices.Radios;
-using Windows.Storage.Streams;
 
 namespace SolixBle;
 
@@ -33,12 +29,7 @@ public static class SolixScanner
     {
         try
         {
-            var adapter = await BluetoothAdapter.GetDefaultAsync().AsTask().ConfigureAwait(false);
-            if (adapter is null)
-                return BluetoothStatus.NoAdapter;
-
-            var radio = await adapter.GetRadioAsync().AsTask().ConfigureAwait(false);
-            return radio?.State == RadioState.On ? BluetoothStatus.Ready : BluetoothStatus.RadioOff;
+            return await BleTransport.Scanner.GetStatusAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -60,33 +51,28 @@ public static class SolixScanner
         var found = new Dictionary<ulong, DiscoveredDevice>();
         var gate = new object();
 
-        var watcher = new BluetoothLEAdvertisementWatcher
-        {
-            ScanningMode = BluetoothLEScanningMode.Active,
-        };
-
-        watcher.Received += (_, args) =>
+        void OnAdvertisement(BleAdvertisement args)
         {
             SolixLog.Debug(
-                $"Found generic BT device '{args.BluetoothAddress:X12}' with local name '{args.Advertisement.LocalName}'");
+                $"Found generic BT device '{args.Address:X12}' with local name '{args.LocalName}'");
 
-            var hasIdentifier = args.Advertisement.ServiceUuids.Contains(SolixConst.UuidIdentifier);
-            var record = ReadAnkerRecord(args.Advertisement);
+            var hasIdentifier = args.ServiceUuids.Contains(SolixConst.UuidIdentifier);
+            var record = ReadAnkerRecord(args.ManufacturerData);
 
             lock (gate)
             {
-                var name = args.Advertisement.LocalName ?? string.Empty;
-                if (found.TryGetValue(args.BluetoothAddress, out var existing))
+                var name = args.LocalName ?? string.Empty;
+                if (found.TryGetValue(args.Address, out var existing))
                 {
                     // The local name and the manufacturer record may only arrive
                     // on a later advertisement or scan response (which may lack
                     // the service UUIDs); update the entry when they show up.
                     var newName = string.IsNullOrEmpty(name) ? existing.Name : name;
                     var productType = record?.ProductType ?? existing.ProductType;
-                    found[args.BluetoothAddress] = existing with
+                    found[args.Address] = existing with
                     {
                         Name = newName,
-                        Rssi = args.RawSignalStrengthInDBm,
+                        Rssi = args.Rssi,
                         ProductType = productType,
                         Capability = record?.Capability ?? existing.Capability,
                         SuggestedModel = SolixDeviceFactory.SuggestModel(productType, newName),
@@ -97,32 +83,26 @@ public static class SolixScanner
                 else if (hasIdentifier || record is not null)
                 {
                     SolixLog.Debug(
-                        $"Found Anker device '{args.BluetoothAddress:X12}' with local name '{name}'" +
+                        $"Found Anker device '{args.Address:X12}' with local name '{name}'" +
                         (record is null
                             ? ""
                             : $", product type {record.ProductType}, sku '{record.Sku}'," +
                               $" capability {(record.Capability is { } c ? c.ToString("x2") : "none")}"));
-                    found[args.BluetoothAddress] = new DiscoveredDevice(
-                        args.BluetoothAddress,
-                        AddressToMac(args.BluetoothAddress),
+                    found[args.Address] = new DiscoveredDevice(
+                        args.Address,
+                        AddressToMac(args.Address),
                         name,
-                        args.RawSignalStrengthInDBm,
+                        args.Rssi,
                         record?.ProductType,
                         record?.Capability,
                         SolixDeviceFactory.SuggestModel(record?.ProductType, name));
                 }
             }
-        };
+        }
 
-        watcher.Start();
-        try
-        {
-            await Task.Delay(timeout ?? TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            watcher.Stop();
-        }
+        await BleTransport.Scanner
+            .ScanAsync(timeout ?? TimeSpan.FromSeconds(5), OnAdvertisement, ct)
+            .ConfigureAwait(false);
 
         lock (gate)
         {
@@ -131,17 +111,11 @@ public static class SolixScanner
     }
 
     /// <summary>Decode the Anker record of an advertisement, if it carries a well-formed one.</summary>
-    private static AnkerAdvertisement? ReadAnkerRecord(BluetoothLEAdvertisement advertisement)
+    private static AnkerAdvertisement? ReadAnkerRecord(IReadOnlyList<BleManufacturerData> manufacturerData)
     {
-        foreach (var manufacturerData in advertisement.GetManufacturerDataByCompanyId(SolixConst.AnkerCompanyId))
+        foreach (var (companyId, data) in manufacturerData)
         {
-            var data = new byte[manufacturerData.Data.Length];
-            using (var reader = DataReader.FromBuffer(manufacturerData.Data))
-            {
-                reader.ReadBytes(data);
-            }
-
-            if (AnkerAdvertisement.Parse(data) is { } record)
+            if (companyId == SolixConst.AnkerCompanyId && AnkerAdvertisement.Parse(data) is { } record)
                 return record;
         }
 

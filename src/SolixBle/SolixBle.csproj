@@ -1,11 +1,27 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <TargetFrameworks>net10.0-windows10.0.19041.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>SolixBle</RootNamespace>
+    <IsWindowsTarget Condition="'$([MSBuild]::GetTargetPlatformIdentifier($(TargetFramework)))' == 'windows'">true</IsWindowsTarget>
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsWindowsTarget)' == 'true'">
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsWindowsTarget)' != 'true'">
+    <Compile Remove="Platform\Windows\**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsWindowsTarget)' == 'true'">
+    <Compile Remove="Platform\Linux\**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IsWindowsTarget)' != 'true'">
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.95.1" />
+  </ItemGroup>
 
 </Project>

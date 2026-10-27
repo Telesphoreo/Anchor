@@ -20,7 +20,7 @@ public class SolixBleDevice : IAsyncDisposable
     private readonly ulong _bluetoothAddress;
     private string? _bleName;
 
-    private GattClient? _client;
+    private IGattLink? _client;
     private Dictionary<string, List<byte[]>> _fragmentBuffers = new();
     private Dictionary<string, byte[]>? _data;
     private DateTimeOffset? _lastDataTimestamp;
@@ -141,7 +141,8 @@ public class SolixBleDevice : IAsyncDisposable
     /// Whether to hold a WinRT GattSession with MaintainConnection = true so the
     /// OS keeps the BLE link alive across idle periods. Default true. Diagnostic
     /// toggle: some firmwares may react badly to the OS-driven connection
-    /// management this enables.
+    /// management this enables. Windows only; BlueZ holds the link until it is
+    /// disconnected.
     /// </summary>
     public bool MaintainConnection { get; set; } = true;
 
@@ -221,7 +222,9 @@ public class SolixBleDevice : IAsyncDisposable
         if (string.IsNullOrEmpty(_bleName) && _client?.DeviceName is { Length: > 0 } osName)
             _bleName = osName;
 
-        SolixLog.Debug($"Established initial connection to '{Name}' on attempt {_connectionAttempts}!");
+        SolixLog.Debug(
+            $"Established initial connection to '{Name}' on attempt {_connectionAttempts}" +
+            $" (ATT MTU {(_client?.Mtu is > 0 and var mtu ? mtu.ToString() : "unknown")})!");
 
         // Optional settle delay before the first negotiation write.
         if (NegotiationStartDelay > TimeSpan.Zero)
@@ -462,7 +465,7 @@ public class SolixBleDevice : IAsyncDisposable
         var attempts = Math.Max(1, maxAttempts);
         for (var attempt = 1; attempt <= attempts; attempt++)
         {
-            var client = new GattClient(_bluetoothAddress, MaintainConnection);
+            var client = BleTransport.CreateLink(_bluetoothAddress, MaintainConnection);
             client.NotificationReceived += OnNotificationReceived;
             client.Disconnected += OnClientDisconnected;
             _client = client;
@@ -744,7 +747,7 @@ public class SolixBleDevice : IAsyncDisposable
         return true;
     }
 
-    private void OnNotificationReceived(GattClient client, byte[] data)
+    private void OnNotificationReceived(IGattLink client, byte[] data)
     {
         // Serialize notification processing while preserving arrival order.
         lock (_notificationGate)
@@ -754,7 +757,7 @@ public class SolixBleDevice : IAsyncDisposable
         }
     }
 
-    private async Task ProcessNotificationSerializedAsync(Task previous, GattClient client, byte[] data)
+    private async Task ProcessNotificationSerializedAsync(Task previous, IGattLink client, byte[] data)
     {
         await previous.ConfigureAwait(false);
         try
@@ -773,7 +776,7 @@ public class SolixBleDevice : IAsyncDisposable
     /// handling, the cmd's 0x80 flag reassembles fragments and its 0x40 flag
     /// decrypts.
     /// </summary>
-    private async Task ProcessNotificationAsync(GattClient client, byte[] data)
+    private async Task ProcessNotificationAsync(IGattLink client, byte[] data)
     {
         if (!ReferenceEquals(client, _client))
         {
@@ -1135,7 +1138,7 @@ public class SolixBleDevice : IAsyncDisposable
     /// is only cleared if the re-connection fails. Also triggers the
     /// disconnection event so the automatic reconnection task attempts to reconnect.
     /// </summary>
-    private void OnClientDisconnected(GattClient client)
+    private void OnClientDisconnected(IGattLink client)
     {
         // Ignore disconnect callbacks from old clients.
         if (!ReferenceEquals(client, _client))
