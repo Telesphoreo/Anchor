@@ -3,7 +3,7 @@
 ; Compile via scripts\build-installer.ps1 (which publishes the app first).
 
 #define MyAppName "Anchor"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Telesphoreo"
 #define MyAppURL "https://github.com/Telesphoreo/Anchor"
 #define MyAppExeName "Anchor.exe"

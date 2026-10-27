@@ -8,10 +8,10 @@
     <AssemblyName>Anchor</AssemblyName>
     <Product>Anchor</Product>
     <Authors>Telesphoreo</Authors>
-    <Version>1.1.0</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.0</InformationalVersion>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
   </PropertyGroup>
 
   <!-- A publish names a runtime but not a framework (scripts/build-installer.ps1 runs
